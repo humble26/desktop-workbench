@@ -1929,30 +1929,80 @@ function main() {
     });
   }
 
-  // 解析适合取图标的路径：.lnk 依次尝试 readShortcutLink → PowerShell → 原路径
-  async function resolveIconSource(p) {
-    if (path.extname(p).toLowerCase() !== '.lnk') return p;
+  // 识别 SHGetFileInfo 失败时的通用占位图：对一个必然不存在的文件采基准图，
+  // 与之相同的图标说明 Windows 没能提取出真图标
+  let genericIconSigCache = null;
+  async function genericIconSig() {
+    if (genericIconSigCache !== null) return genericIconSigCache;
     try {
-      const lnk = shell.readShortcutLink(p);
-      if (lnk && lnk.target && path.isAbsolute(lnk.target)) {
-        return fs.existsSync(lnk.target) ? lnk.target : p;
-      }
-    } catch (e) { /* fallthrough */ }
-    const viaPs = await resolveLnkViaPs(p);
-    return viaPs || p;
+      const img = await app.getFileIcon('C:\\__wbench_missing__.exe', { size: 'large' });
+      genericIconSigCache = img && !img.isEmpty() ? img.toDataURL() : '';
+    } catch (e) {
+      genericIconSigCache = '';
+    }
+    return genericIconSigCache;
   }
 
-  // 多级尝试取文件图标，尽量返回非空 dataURL；失败返回 null
+  // SHGetFileInfo 失败时用 GDI+ ExtractAssociatedIcon 兜底（对 PNG 压缩图标等特殊 exe 有效）
+  function extractIconViaPs(p) {
+    return new Promise((resolve) => {
+      try {
+        const outPng = path.join(os.tmpdir(), 'wbench-icon-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.png');
+        const ps = [
+          'try {',
+          '  Add-Type -AssemblyName System.Drawing',
+          "  $ico = [System.Drawing.Icon]::ExtractAssociatedIcon('" + String(p).replace(/'/g, "''") + "')",
+          "  $ico.ToBitmap().Save('" + outPng.replace(/\\/g, '\\\\') + "', [System.Drawing.Imaging.ImageFormat]::Png)",
+          "  Write-Output 'OK'",
+          "} catch { Write-Output 'FAIL' }"
+        ].join('; ');
+        execFile('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true, encoding: 'utf8', timeout: 8000 }, (err) => {
+          try {
+            if (err || !fs.existsSync(outPng)) return resolve(null);
+            const buf = fs.readFileSync(outPng);
+            fs.rmSync(outPng, { force: true });
+            resolve(buf.length > 120 ? 'data:image/png;base64,' + buf.toString('base64') : null);
+          } catch (e) { resolve(null); }
+        });
+      } catch (e) { resolve(null); }
+    });
+  }
+
+  // 多级尝试取文件图标：
+  // lnk → 解析目标（readShortcutLink → PowerShell 兜底）→ 常规提取 → 占位图检测 → GDI+ 兜底。
+  // 「lnk 自身的图标」永远是通用占位图，绝不作为有效结果返回（失败返回 null，渲染层显示字母头像）。
   async function fetchFileIcon(p) {
     try {
-      const source = await resolveIconSource(p);
-      const attempts = source !== p ? [source, p] : [p];
-      for (const t of attempts) {
+      const isLnk = path.extname(p).toLowerCase() === '.lnk';
+      let source = p;
+      let resolved = !isLnk;
+      if (isLnk) {
         try {
-          const img = await app.getFileIcon(t, { size: 'large' });
-          if (img && !img.isEmpty()) return img.toDataURL();
-        } catch (e) { /* try next */ }
+          const l = shell.readShortcutLink(p);
+          if (l && l.target && path.isAbsolute(l.target) && fs.existsSync(l.target)) {
+            source = l.target;
+            resolved = true;
+          }
+        } catch (e) { /* ignore */ }
+        if (!resolved) {
+          const viaPs = await resolveLnkViaPs(p);
+          if (viaPs) { source = viaPs; resolved = true; }
+        }
       }
+      const generic = await genericIconSig();
+      // 第一级：常规提取（SHGetFileInfo 路径）
+      try {
+        const img = await app.getFileIcon(source, { size: 'large' });
+        if (img && !img.isEmpty()) {
+          const durl = img.toDataURL();
+          if (durl !== generic) return durl;   // 真图标
+        }
+      } catch (e) { /* ignore */ }
+      // 目标解析失败的 lnk：任何图标都只会是通用占位图 → 返回 null（渲染层字母头像）
+      if (isLnk && !resolved) return null;
+      // 第二级：GDI+ ExtractAssociatedIcon（对 PNG 压缩图标等特殊 exe 图标资源有效）
+      const viaPs = await extractIconViaPs(source);
+      if (viaPs) return viaPs;
     } catch (e) { /* ignore */ }
     return null;
   }
