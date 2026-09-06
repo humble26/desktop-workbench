@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>桌面工作台</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      </div>
+      <div class="bt">
+        <div class="t">桌面工作台</div>
+        <div class="s">DESKTOP WORKBENCH</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="row"><span id="ver"></span><span class="qt" id="quitBtn">退出</span></div>
+    </div>
+  </aside>
+
+  <div class="content">
+    <div class="titlebar" id="titlebar">
+      <div class="drag" id="tbDrag">
+        <div class="tb-logo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+        </div>
+        <div class="tb-name">桌面工作台</div>
+      </div>
+    </div>
+    <div class="winctl" id="winctl">
+      <button id="searchBtn" title="全局搜索 (Ctrl+K)"></button>
+      <button id="layoutBtn" title="窗口化 / 覆盖桌面"></button>
+      <button id="pinBtn" title="置顶显示"></button>
+      <button id="hideBtn" title="隐藏到系统托盘"></button>
+      <button id="minBtn" title="最小化"></button>
+      <button id="maxBtn" title="最大化 / 还原"></button>
+      <button id="closeBtn" class="danger" title="退出"></button>
+    </div>
+    <div class="main"><div class="view" id="view"></div></div>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<div class="toast-wrap" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

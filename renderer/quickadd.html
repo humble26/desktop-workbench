@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+<title>快速添加待办</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body class="quickadd">
+  <div class="qa-wrap">
+    <div class="qa-top">
+      <span class="qa-ic">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      </span>
+      <span class="qa-title">快速添加待办</span>
+    </div>
+    <input type="text" id="qaInput" autocomplete="off" spellcheck="false" placeholder="输入内容，可附加 今天 / 明天 / HH:MM …" />
+    <div class="qa-foot">回车 = 添加并关闭 · Esc = 取消 · 支持「今天 / 明天 / 后天 / 15:30」等快捷写法</div>
+  </div>
+  <script src="quickadd.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+<title>截图取字</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body class="shot select">
+  <img id="shotImg" alt="" draggable="false" />
+  <div id="shotRect"></div>
+  <div class="shot-hint" id="shotHint">拖拽框选要识别的文字区域 · Esc 取消</div>
+  <div class="shot-result" id="shotResult" style="display:none">
+    <div class="sr-head">
+      <span class="sr-t">识别结果</span>
+      <span class="sr-sp"></span>
+      <button class="wg-btn" id="srClose" title="关闭">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="sr-text" id="srText"></div>
+    <div class="sr-foot">
+      <span class="sr-note">文字已自动复制到剪贴板</span>
+      <span class="sr-sp"></span>
+      <button class="btn sm" id="srCopy">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        复制
+      </button>
+    </div>
+  </div>
+  <script src="shot.js"></script>
+</body>
+</html>

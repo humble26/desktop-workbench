@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+<title>剪贴板历史</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body class="clipboard">
+  <div class="cb-wrap">
+    <div class="cb-top">
+      <span class="cb-logo">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><path d="M9 12h6M9 16h4"/></svg>
+      </span>
+      <div class="cb-searchbox">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="cbSearch" autocomplete="off" spellcheck="false" placeholder="搜索文本 / 文件名 / OCR 文字…" />
+      </div>
+      <div class="seg cb-filters" id="cbFilters">
+        <div class="opt on" data-cbf="all">全部</div>
+        <div class="opt" data-cbf="text">文本</div>
+        <div class="opt" data-cbf="image">图片</div>
+        <div class="opt" data-cbf="file">文件</div>
+      </div>
+    </div>
+    <div class="cb-list" id="cbList"></div>
+    <div class="cb-foot">
+      <span class="cb-hints">↑↓ 选择 · Enter / 点击复制 · Del 删除 · Esc 关闭</span>
+      <span class="cb-sp"></span>
+      <button class="btn ghost sm" id="cbClear">清空未置顶</button>
+    </div>
+  </div>
+  <div id="cbOvl"></div>
+  <script src="clipboard.js"></script>
+</body>
+</html>

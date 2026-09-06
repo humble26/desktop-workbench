@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+<title>小组件</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body class="widget">
+  <div class="wg-head">
+    <span class="wg-dot" id="wgDot"></span>
+    <span class="wg-t" id="wgTitle">小组件</span>
+    <span class="wg-sp"></span>
+    <button class="wg-btn" id="wgOpen" title="打开工作台">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/></svg>
+    </button>
+    <button class="wg-btn" id="wgClose" title="关闭小组件">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="wg-body" id="wgBody"></div>
+  <script src="widget.js"></script>
+</body>
+</html>

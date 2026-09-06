@@ -1,0 +1,73 @@
+{
+  "name": "desktop-workbench",
+  "productName": "桌面工作台",
+  "version": "1.8.0",
+  "description": "PC 桌面级个人工作台：桌面覆盖层 + 文件整理 + 快捷入口 + 待办/便签/打卡 + 剪贴板历史",
+  "main": "main.js",
+  "author": "Workbench",
+  "license": "MIT",
+  "dependencies": {
+    "tesseract.js": "^6.0.1"
+  },
+  "scripts": {
+    "start": "electron .",
+    "icon": "node scripts/make-icon.js",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "pngjs": "^7.0.0",
+    "png-to-ico": "^2.1.8"
+  },
+  "build": {
+    "appId": "com.workbench.desktop",
+    "productName": "桌面工作台",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "ocr-data/**",
+      "build/icon.png"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "ocr-data/**",
+      "node_modules/tesseract.js/**",
+      "node_modules/tesseract.js-core/**"
+    ],
+    "compression": "maximum",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "桌面工作台",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "displayLanguageSelector": false,
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
+  }
+}
