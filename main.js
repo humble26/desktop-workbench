@@ -7,6 +7,11 @@ const os = require('os');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
+// 诊断日志：把原本静默吞掉的异常写入控制台，便于定位保存 / OCR / PowerShell / 窗口故障
+function logE(where, e) {
+  try { console.warn('[workbench]', where, '::', (e && e.stack) || (e && e.message) || e); } catch (_) { /* ignore */ }
+}
+
 // ---------------------------------------------------------------------------
 // 单实例锁：防止重复启动
 // ---------------------------------------------------------------------------
@@ -54,6 +59,7 @@ function main() {
       }
       return dest;
     } catch (e) {
+      logE('doBackup', e);
       return null;
     }
   }
@@ -80,8 +86,40 @@ function main() {
       checkins: [],
       shortcuts: [],
       groups: [],
-      settings: { mode: 'normal', autostart: false, accent: '#2f2e2b', layout: 'overlay', theme: 'light', dailyRemind: false, dailyRemindTime: '08:30', clipboardHistory: true, timeTrack: TIME_TRACK_DEFAULTS }
+      settings: { mode: 'normal', autostart: false, accent: '#2f2e2b', layout: 'overlay', theme: 'light', dailyRemind: false, dailyRemindTime: '08:30', clipboardHistory: true, clipboardSensitive: true, timeTrack: TIME_TRACK_DEFAULTS }
     };
+  }
+
+  // 统一数据归一化：校验顶层及嵌套字段类型，损坏或缺字段用默认值兜底，避免渲染期崩溃
+  function sanitizeData(parsed) {
+    const base = defaultData();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return base;
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+    const out = Object.assign({}, base, parsed);
+    out.todos = arr(parsed.todos).filter(t => t && typeof t === 'object');
+    out.notes = arr(parsed.notes).filter(n => n && typeof n === 'object');
+    out.checkins = arr(parsed.checkins).filter(c => c && typeof c === 'object');
+    out.shortcuts = arr(parsed.shortcuts).filter(s => s && typeof s === 'object');
+    out.groups = arr(parsed.groups).filter(g => g && typeof g === 'object');
+    out.settings = Object.assign({}, base.settings, obj(parsed.settings));
+    out.profile = Object.assign({}, base.profile, obj(parsed.profile));
+    out.todos.forEach(t => {
+      if (!Array.isArray(t.subtasks)) t.subtasks = [];
+      if (!Array.isArray(t.doneHistory)) t.doneHistory = [];
+    });
+    out.groups.forEach(g => {
+      if (!Array.isArray(g.items)) g.items = [];
+      else g.items = g.items.filter(it => it && typeof it === 'object');
+    });
+    // autoOrganize 设置约束：watch 必须是字符串，rules 每项的 value/to 都必须是字符串
+    const ao = obj(out.settings.autoOrganize);
+    ao.watch = typeof ao.watch === 'string' ? ao.watch : '';
+    ao.rules = Array.isArray(ao.rules)
+      ? ao.rules.filter(r => r && typeof r === 'object' && typeof r.value === 'string' && typeof r.to === 'string')
+      : [];
+    out.settings.autoOrganize = ao;
+    return out;
   }
 
   // 尝试从备份恢复损坏的主数据文件
@@ -110,8 +148,7 @@ function main() {
     try {
       const raw = fs.readFileSync(storePath(), 'utf8');
       const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object') return defaultData();
-      return Object.assign(defaultData(), parsed);
+      return sanitizeData(parsed);
     } catch (e) {
       return defaultData();
     }
@@ -124,6 +161,7 @@ function main() {
       fs.renameSync(tmp, storePath());
       return true;
     } catch (e) {
+      logE('saveStore', e);
       return false;
     }
   }
@@ -520,6 +558,23 @@ function main() {
 
   function clipUid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
+  // 敏感内容识别：JWT / 私钥 / 口令 / API Key 等不写入剪贴板历史，避免明文落盘
+  function isSensitiveText(t) {
+    if (!t) return false;
+    const s = String(t);
+    if (/\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}/.test(s)) return true;             // JWT
+    if (/(-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----)/.test(s)) return true;      // 私钥
+    if (/\b(password|passwd|pwd|secret|api[-_]?key|token|access[-_]?key|client[-_]?secret|登录口令)\s*[=:：]\s*\S{8,}/i.test(s)) return true;
+    if (/\bgh[pousr]_[A-Za-z0-9]{20,}\b/.test(s)) return true;                             // GitHub token
+    if (/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/.test(s)) return true;                           // Slack token
+    if (/\bAKIA[A-Z0-9]{16}\b/.test(s)) return true;                                       // AWS Access Key
+    return false;
+  }
+
+  function clipSensitiveEnabled() {
+    try { return (loadStore().settings || {}).clipboardSensitive !== false; } catch (e) { return true; }
+  }
+
   function loadClipData() {
     try {
       const parsed = JSON.parse(fs.readFileSync(clipStorePath(), 'utf8'));
@@ -705,7 +760,7 @@ function main() {
         if (it) enrichClipFiles(it);             // 异步补全多文件列表
       }
       else if (img) addClipItem({ type: 'image', img });
-      else if (text.trim() && text.length <= CLIP_TEXT_MAX) addClipItem({ type: 'text', text });
+      else if (text.trim() && text.length <= CLIP_TEXT_MAX) { if (!clipSensitiveEnabled() || !isSensitiveText(text)) addClipItem({ type: 'text', text }); }
     } catch (e) { /* ignore */ }
   }
 
@@ -1326,8 +1381,9 @@ function main() {
     cancelShot();
     try {
       const b64 = String(dataUrl || '').split(',')[1] || '';
+      if (!b64 || b64.length > 40e6) { showShotResult(''); return { ok: false }; } // 尺寸上限：约 30MB 的 Base64
       const buf = Buffer.from(b64, 'base64');
-      if (!buf.length) { showShotResult(''); return { ok: false }; }
+      if (!buf.length || buf.length > 30 * 1024 * 1024) { showShotResult(''); return { ok: false }; }
       const tmp = path.join(os.tmpdir(), 'workbench-shot-' + Date.now() + '.png');
       fs.writeFileSync(tmp, buf);
       let text = '';
@@ -1459,6 +1515,16 @@ function main() {
   ipcMain.handle('widgets:openMain', (event) => { if (!isTrustedSender(event)) return false; showWin(); return true; });
 
   // -----------------------------------------------------------
+  // 月末安全顺延：目标月份天数不足时钳制到当月最后一天（如 1-31 → 2 月末）
+  function advanceMonthClamped(d) {
+    const day = d.getDate();
+    const last = new Date(d.getFullYear(), d.getMonth() + 2, 0).getDate(); // 目标月的天数
+    d.setDate(1);          // 先回到 1 号，避免 setMonth 造成天数溢出
+    d.setMonth(d.getMonth() + 1);
+    d.setDate(Math.min(day, last));
+    return d;
+  }
+
   // 重复待办逾期自动顺延（设置开启时）
   // -----------------------------------------------------------
   function autoAdvanceOverdue() {
@@ -1476,7 +1542,7 @@ function main() {
           switch (t.repeat) {
             case 'daily': next.setDate(next.getDate() + 1); break;
             case 'weekly': next.setDate(next.getDate() + 7); break;
-            case 'monthly': next.setMonth(next.getMonth() + 1); break;
+            case 'monthly': advanceMonthClamped(next); break;
             case 'yearly': next.setFullYear(next.getFullYear() + 1); break;
             default: return; // 未知周期，跳过
           }
@@ -1514,7 +1580,7 @@ function main() {
       const cfg = (loadStore().settings || {}).autoOrganize || {};
       if (cfg.enabled !== true) return { moved: [], errors: [] };
       const watch = String(cfg.watch || '').trim();
-      const rules = (Array.isArray(cfg.rules) ? cfg.rules : []).filter(r => r && r.value && r.to);
+      const rules = (Array.isArray(cfg.rules) ? cfg.rules : []).filter(r => r && r.value && typeof r.to === 'string' && path.isAbsolute(r.to));
       if (!watch || !fs.existsSync(watch) || !rules.length) return { moved: [], errors: [] };
 
       const moved = [];
@@ -1524,7 +1590,6 @@ function main() {
         if (ent.isDirectory()) continue; // 只整理文件，不递归
         const src = path.join(watch, ent.name);
         if (organizeSeen.has(src)) continue;
-        organizeSeen.add(src);
 
         let targetDir = null;
         const nameL = ent.name.toLowerCase();
@@ -1535,13 +1600,15 @@ function main() {
           if (r.type === 'ext') { if (v === ext) { targetDir = r.to; break; } }
           else { if (nameL.indexOf(v) !== -1) { targetDir = r.to; break; } } // kw 关键词
         }
-        if (!targetDir) continue;
+        if (!targetDir) { organizeSeen.add(src); continue; }
         try {
           if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
           const dest = uniqueTargetPath(path.join(targetDir, ent.name));
           fs.renameSync(src, dest);
           moved.push({ from: src, to: dest });
+          organizeSeen.add(src);   // 成功后记住，避免反复尝试
         } catch (e) {
+          organizeSeen.delete(src); // 失败时移出，下次轮询可重试
           errors.push({ file: ent.name, msg: String((e && e.message) || e) });
         }
       }
@@ -2115,6 +2182,7 @@ function main() {
       JSON.parse(content); // 校验合法性
       return { ok: true, canceled: false, content };
     } catch (e) {
+      logE('data:import', e);
       return { ok: false, canceled: false, content: null };
     }
   });
@@ -2126,6 +2194,7 @@ function main() {
 
   app.whenReady().then(() => {
     app.setAppUserModelId('com.workbench.desktop');
+    autoRestore(); // 先于窗口/渲染进程就绪时尝试恢复损坏主数据，确保本次启动即显示恢复结果
     createWindow();
     buildTray();
     registerHotkey();
@@ -2154,9 +2223,6 @@ function main() {
     screen.on('display-metrics-changed', handleDisplayChange);
     screen.on('display-added', handleDisplayChange);
     screen.on('display-removed', handleDisplayChange);
-
-    // 自动备份恢复：启动时若主数据损坏，尝试从最近备份恢复
-    autoRestore();
 
     // 待办到期提醒 + 每日汇总 + 逾期顺延 + 自动整理：启动后每 30 秒检查一次
     setInterval(() => { checkReminders(); checkDailySummary(); autoAdvanceOverdue(); runAutoOrganize(); }, 30 * 1000);

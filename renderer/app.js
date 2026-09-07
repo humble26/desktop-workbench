@@ -5,6 +5,44 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const api = window.api;
 
+  // Windows 绝对路径判断（渲染进程无 Node path 模块）
+  function isAbsPath(p) { return typeof p === 'string' && (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\\\')); }
+
+  // 导入数据做结构清洗：损坏字段用空数组兜底，避免渲染期 forEach/filter 崩溃
+  function sanitizeImported(imp) {
+    const s = (imp && typeof imp === 'object' && !Array.isArray(imp)) ? imp : {};
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+    const out = {
+      todos: arr(s.todos).filter(t => t && typeof t === 'object'),
+      notes: arr(s.notes).filter(n => n && typeof n === 'object'),
+      checkins: arr(s.checkins).filter(c => c && typeof c === 'object'),
+      shortcuts: arr(s.shortcuts).filter(x => x && typeof x === 'object'),
+      groups: arr(s.groups).filter(g => g && typeof g === 'object'),
+      settings: obj(s.settings),
+      profile: obj(s.profile)
+    };
+    out.todos.forEach(t => { if (!Array.isArray(t.subtasks)) t.subtasks = []; if (!Array.isArray(t.doneHistory)) t.doneHistory = []; });
+    out.groups.forEach(g => { if (!Array.isArray(g.items)) g.items = []; else g.items = g.items.filter(it => it && typeof it === 'object'); });
+    return out;
+  }
+
+  // 合并导入设置：autoOrganize 仅当给出合法绝对路径 + 规则数组时采纳，否则保留现有，防误写作任意文件移动
+  function sanitizeSettingsMerge(prev, imp) {
+    const next = Object.assign({}, prev, imp);
+    const ao = imp.autoOrganize;
+    if (ao && typeof ao === 'object') {
+      const validWatch = typeof ao.watch === 'string' && ao.watch.trim() && isAbsPath(ao.watch);
+      const validRules = Array.isArray(ao.rules) && ao.rules.every(r => r && typeof r.value === 'string' && r.value && isAbsPath(r.to));
+      if (validWatch && validRules) {
+        next.autoOrganize = { enabled: !!ao.enabled, watch: ao.watch.trim(), rules: ao.rules.map(r => ({ enabled: !!r.enabled, type: r.type, value: r.value, to: r.to })) };
+      } else {
+        next.autoOrganize = (prev && prev.autoOrganize) || { enabled: false, watch: '', rules: [] };
+      }
+    }
+    return next;
+  }
+
   // ---------------------------------------------------------------
   // 图标（Lucide 风格 stroke，24×24）
   // ---------------------------------------------------------------
@@ -112,7 +150,11 @@
   // 持久化
   // ---------------------------------------------------------------
   async function save(silent) {
-    try { await api.save(state); } catch (e) { if (!silent) toast('保存失败'); }
+    try {
+      const r = await api.save(state);
+      if (r === false) { if (!silent) toast('保存失败：数据未能写入磁盘'); return false; }
+      return true;
+    } catch (e) { if (!silent) toast('保存失败'); return false; }
   }
   function normalizeCheckins() {
     const tk = dateKey();
@@ -482,12 +524,20 @@
   function repeatLabel(k) { const r = REPEATS.find(x => x.key === k); return r ? r.label : ''; }
   const repeatUnits = { daily: '天', weekly: '周', monthly: '月', yearly: '年' };
   function repeatSub(k) { return repeatUnits[k] ? '每' + repeatUnits[k] : ''; }
+  function advanceMonthClamped(d) {
+    const day = d.getDate();
+    const last = new Date(d.getFullYear(), d.getMonth() + 2, 0).getDate(); // 目标月的天数
+    d.setDate(1);
+    d.setMonth(d.getMonth() + 1);
+    d.setDate(Math.min(day, last));
+    return d;
+  }
   function advanceRepeat(t) {
     const next = new Date(t.due + 'T00:00:00');
     switch (t.repeat) {
       case 'daily': next.setDate(next.getDate() + 1); break;
       case 'weekly': next.setDate(next.getDate() + 7); break;
-      case 'monthly': next.setMonth(next.getMonth() + 1); break;
+      case 'monthly': advanceMonthClamped(next); break;
       case 'yearly': next.setFullYear(next.getFullYear() + 1); break;
       default: return;
     }
@@ -1242,7 +1292,8 @@
       ${group('功能', `
         ${row('power', 'c2', '开机自启', '登录 Windows 后自动启动工作台', sw('toggle-autostart', !!s.autostart))}
         ${row('repeat', 'c3', '重复待办逾期自动顺延', '重复任务过期未完成时，自动顺延到下一周期，避免堆积在昨天', sw('toggle-overdue', s.autoOverdueAdvance === true))}
-        ${row('clipboard', 'c4', '剪贴板历史', '自动记录复制的文本 / 图片 / 文件，按 <b>Win+Alt+V</b> 唤出，支持搜索、置顶、类型过滤与图片 OCR 提字（最多保留 200 条）', sw('toggle-clipboard', s.clipboardHistory !== false))}
+        ${row('clipboard', 'c4', '剪贴板历史', '自动记录复制的文本 / 图片 / 文件，按 <b>Win+Alt+V</b> 唤出，支持搜索、置顶、类型过滤与图片 OCR 提字（最多保留 200 条）', sw('toggle-clipboard', s.clipboardHistory !== false), `
+          <div class="set-sub-row"><label class="set-sub-lb">敏感内容过滤</label><div class="switch ${s.clipboardSensitive !== false ? 'on' : ''}" data-act="toggle-clipboard-sensitive"></div><span style="font-size:12px;color:var(--text-tertiary);padding-left:10px">JWT / 口令 / API Key 等敏感内容不录入历史</span></div>`)}
         ${row('bell', 'c5', '每日提醒', '每天定时汇总当天到期的待办，并系统通知', sw('toggle-dailyremind', !!s.dailyRemind), s.dailyRemind ? `
           <div class="set-sub-row"><label class="set-sub-lb">提醒时间</label><input type="time" id="dailyRemindTime" value="${esc(s.dailyRemindTime || '08:30')}" style="width:150px;flex:0 0 auto" /></div>` : null)}
         ${row('folder-open', 'c1', '自动文件整理', '监控一个文件夹，新放入的文件按规则自动移动到对应目录', sw('toggle-autoorganize', !!org.enabled), `
@@ -1771,6 +1822,7 @@
       case 'toggle-glass': { state.settings.glass = !state.settings.glass; await api.setGlass(state.settings.glass); await save(); render(); break; }
       case 'toggle-overdue': { state.settings.autoOverdueAdvance = !(state.settings.autoOverdueAdvance === true); await save(); render(); break; }
       case 'toggle-clipboard': { state.settings.clipboardHistory = state.settings.clipboardHistory === false; await save(); render(); break; }
+      case 'toggle-clipboard-sensitive': { state.settings.clipboardSensitive = state.settings.clipboardSensitive === false; await save(); render(); break; }
       case 'toggle-timetrack': {
         state.settings.timeTrack = state.settings.timeTrack || {};
         state.settings.timeTrack.enabled = !(state.settings.timeTrack.enabled === true);
@@ -1918,13 +1970,14 @@
         if (!r.ok) { toast('导入失败：文件不是有效的工作台数据'); break; }
         try {
           const imp = JSON.parse(r.content);
-          if (!imp || typeof imp !== 'object') throw new Error('bad');
+          const san = sanitizeImported(imp);
           const sure = await importConfirm();
           if (!sure) break;
-          state.todos = imp.todos || []; state.notes = imp.notes || [];
-          state.checkins = imp.checkins || []; state.shortcuts = imp.shortcuts || [];
-          state.groups = imp.groups || []; state.settings = Object.assign(state.settings, imp.settings || {});
-          state.profile = Object.assign({ name: '我的工作台' }, imp.profile || {});
+          state.todos = san.todos; state.notes = san.notes;
+          state.checkins = san.checkins; state.shortcuts = san.shortcuts;
+          state.groups = san.groups;
+          state.settings = sanitizeSettingsMerge(state.settings, san.settings);
+          state.profile = Object.assign({ name: '我的工作台' }, san.profile);
           render();
           await save(true);
           toast('已导入数据');
@@ -2096,7 +2149,7 @@
     if (!api) { document.body.innerHTML = '<div style="padding:40px;font-family:monospace">preload 未加载</div>'; return; }
     state = await api.load();
     state.profile = Object.assign({ name: '我的工作台' }, state.profile || {});
-    state.settings = Object.assign({ mode: 'normal', autostart: false, accent: '#2f2e2b', seenGuide: false, layout: 'overlay', glass: false, autoOverdueAdvance: false, updaterUrl: '', autoOrganize: { enabled: false, watch: '', rules: [] }, dailyRemind: false, dailyRemindTime: '08:30', autoBackup: true, clipboardHistory: true, widgets: { clock: false, todos: false, notes: false }, theme: 'light' }, state.settings || {});
+    state.settings = Object.assign({ mode: 'normal', autostart: false, accent: '#2f2e2b', seenGuide: false, layout: 'overlay', glass: false, autoOverdueAdvance: false, updaterUrl: '', autoOrganize: { enabled: false, watch: '', rules: [] }, dailyRemind: false, dailyRemindTime: '08:30', autoBackup: true, clipboardHistory: true, clipboardSensitive: true, widgets: { clock: false, todos: false, notes: false }, theme: 'light' }, state.settings || {});
     if (!state.settings.autoOrganize || typeof state.settings.autoOrganize !== 'object') state.settings.autoOrganize = { enabled: false, watch: '', rules: [] };
     if (!Array.isArray(state.settings.autoOrganize.rules)) state.settings.autoOrganize.rules = [];
     if (!state.settings.timeTrack || typeof state.settings.timeTrack !== 'object') state.settings.timeTrack = { enabled: false, idleSeconds: 300, recordTitles: false, rules: [] };

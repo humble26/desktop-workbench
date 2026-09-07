@@ -12,7 +12,9 @@
   "scripts": {
     "start": "electron .",
     "icon": "node scripts/make-icon.js",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/clipboard.js && node --check renderer/quickadd.js && node --check renderer/shot.js && node --check renderer/widget.js",
+    "test": "npm run check"
   },
   "devDependencies": {
     "electron": "^31.7.7",

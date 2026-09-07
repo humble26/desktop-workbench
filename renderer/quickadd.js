@@ -1,4 +1,6 @@
 (function () {
+  const api = window.api;
+  if (!api) return;
   const inp = document.getElementById('qaInput');
   if (!inp) return;
 

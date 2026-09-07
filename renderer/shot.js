@@ -63,10 +63,18 @@
     const h = Math.abs(e.clientY - dragStart.y);
     if (w < 8 || h < 8) { rectEl.style.width = '0px'; rectEl.style.height = '0px'; return; }
     // CSS 选区换算到截图物理像素后裁剪，保证清晰度（横纵比例独立换算）
-    const sx = Math.round(x * ratioX);
-    const sy = Math.round(y * ratioY);
-    const sw = Math.max(1, Math.round(w * ratioX));
-    const sh = Math.max(1, Math.round(h * ratioY));
+    const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+    const CROP_PIXELS_MAX = 24e6;                    // 单次裁剪最大像素，避免 Canvas 内存过大
+    let sx = Math.round(x * ratioX);
+    let sy = Math.round(y * ratioY);
+    let sw = Math.round(w * ratioX);
+    let sh = Math.round(h * ratioY);
+    // 钳制到原图范围内，防止选区越界生成空白或大量越界像素
+    sx = Math.max(0, Math.min(sx, nw));
+    sy = Math.max(0, Math.min(sy, nh));
+    sw = Math.max(1, Math.min(sw, nw - sx));
+    sh = Math.max(1, Math.min(sh, nh - sy));
+    if (sw * sh > CROP_PIXELS_MAX) { rectEl.style.width = '0px'; rectEl.style.height = '0px'; return; }
     const c = document.createElement('canvas');
     c.width = sw;
     c.height = sh;
