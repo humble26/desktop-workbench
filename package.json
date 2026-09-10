@@ -13,7 +13,7 @@
     "start": "electron .",
     "icon": "node scripts/make-icon.js",
     "check": "node tools/check-syntax.js",
-    "test": "node --test --test-isolation=none test/storeproto.test.js test/migrate.test.js test/store.test.js test/security.test.js test/powershell.test.js test/quickadd.test.js test/usage.test.js test/iconcache.test.js test/patchguard.test.js test/ported-features.test.js test/styles.test.js test/contract.test.js test/main-assembly.test.js test/renderer-boot.test.js",
+    "test": "node --test --test-isolation=none test/storeproto.test.js test/migrate.test.js test/store.test.js test/security.test.js test/powershell.test.js test/quickadd.test.js test/usage.test.js test/iconcache.test.js test/patchguard.test.js test/ported-features.test.js test/styles.test.js test/text-integrity.test.js test/contract.test.js test/main-assembly.test.js test/renderer-boot.test.js",
     "test:smoke": "electron tools/smoke/renderer-smoke.js",
     "dist": "electron-builder --win"
   },
