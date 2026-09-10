@@ -18,7 +18,10 @@
    用法：
      const r = createRendererHarness();
      await r.boot();                 // 加载脚本 + 等启动完成
-     r.eval('state.view = "todos"; render();');
+     await r.evalIn('(async function(){ state.view = "todos"; await render(); })()');
+                                     // ↑ 视图测试必须 await render()：render() 是 async，
+                                     //   视图里同步抛出的异常会变成被拒绝的 Promise，
+                                     //   不 await 就没人接 —— 测试全绿、退出码却是 1
      r.result();                     // { navRendered, viewRendered, errors, ... }
      r.dispose();                    // 清掉渲染层注册的定时器
    =========================================================================== */
@@ -45,7 +48,14 @@ function makeClassList() {
   };
 }
 
+/* 元素桩：只实现渲染层真正用到的那部分 DOM ——
+   但「用到而没实现」的方法会直接抛 TypeError，而不是被悄悄吞掉。
+   这条纪律是有代价换来的：`insertAdjacentHTML` 曾缺失，
+   view-checkins.js 的「还没有习惯」空状态分支因此一调用就抛，
+   又因为 render() 是 async、调用点没有 await，异常变成测试结束之后的
+   unhandledRejection —— 测试全绿、退出码却是 1，谁也没注意到那个分支从没跑通过。 */
 function makeEl(tag) {
+  const attrs = new Map();
   const el = {
     tagName: String(tag || 'div').toUpperCase(),
     style: { setProperty() {}, removeProperty() {}, getPropertyValue() { return ''; } },
@@ -58,17 +68,43 @@ function makeEl(tag) {
     focus() {}, blur() {}, click() {}, remove() {},
     appendChild(c) { this.children.push(c); return c; },
     insertBefore(c) { this.children.push(c); return c; },
-    removeChild() {}, setAttribute() {}, getAttribute() { return null; },
-    hasAttribute() { return false; }, removeAttribute() {},
+    append(...nodes) { this.children.push(...nodes); },
+    prepend(...nodes) { this.children.unshift(...nodes); },
+    replaceChildren(...nodes) { this.children.length = 0; this.children.push(...nodes); },
+    removeChild() {},
+    setAttribute(n, v) { attrs.set(String(n), String(v)); },
+    getAttribute(n) { return attrs.has(String(n)) ? attrs.get(String(n)) : null; },
+    hasAttribute(n) { return attrs.has(String(n)); },
+    removeAttribute(n) { attrs.delete(String(n)); },
     addEventListener() {}, removeEventListener() {},
     querySelector() { return makeEl('div'); },
     querySelectorAll() { return []; },
     closest() { return null; },
+    matches() { return false; },
     contains() { return false; },
+    cloneNode() { return makeEl(tag); },
     getBoundingClientRect() { return { top: 0, left: 0, right: 0, bottom: 0, width: 100, height: 20 }; },
     scrollIntoView() {}, select() {},
     parentNode: null, firstChild: null,
-    _html: '', _htmlSet: false
+    _html: '', _htmlSet: false,
+    // 桩没有父节点树，beforebegin / afterend 只能记录下来供断言（真实 DOM 会插成兄弟节点）
+    _siblingHtml: [],
+    insertAdjacentHTML(position, html) {
+      const pos = String(position).toLowerCase();
+      const frag = String(html);
+      if (pos === 'beforeend') { el._html += frag; el._htmlSet = true; return; }
+      if (pos === 'afterbegin') { el._html = frag + el._html; el._htmlSet = true; return; }
+      if (pos === 'beforebegin' || pos === 'afterend') { el._siblingHtml.push({ position: pos, html: frag }); return; }
+      throw new Error('insertAdjacentHTML: 未知位置 ' + position);
+    },
+    insertAdjacentText(position, text) { el.insertAdjacentHTML(position, String(text)); },
+    insertAdjacentElement(position, node) {
+      const pos = String(position).toLowerCase();
+      if (pos === 'beforeend') { el.children.push(node); return node; }
+      if (pos === 'afterbegin') { el.children.unshift(node); return node; }
+      if (pos === 'beforebegin' || pos === 'afterend') { el._siblingHtml.push({ position: pos, node: node }); return node; }
+      throw new Error('insertAdjacentElement: 未知位置 ' + position);
+    }
   };
   Object.defineProperty(el, 'innerHTML', {
     get() { return el._html; },

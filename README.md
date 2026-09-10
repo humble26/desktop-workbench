@@ -122,7 +122,8 @@ npm run dist           # 生成 Windows 安装包（产物在 dist\）
 
 **测试覆盖的关键点**（都是踩过的坑）：
 
-- `test/renderer-boot.test.js` —— 无浏览器环境下按 `index.html` 顺序把 23 个脚本加载进共享作用域，断言 `boot()` 能自行完成、11 个视图都能渲染、数据确实进入视图、且无 `console.error`
+- `test/renderer-boot.test.js` —— 无浏览器环境下按 `index.html` 顺序把 24 个脚本加载进共享作用域，断言 `boot()` 能自行完成、11 个视图（含空状态分支）都能渲染、数据确实进入视图、且无 `console.error`
+- `test/helpers/renderer-harness.js` —— 元素桩只实现渲染层真正用到的 DOM，缺什么就显式报错而不是静默返回 `undefined`；**视图测试必须 `await render()`**，否则异步视图里同步抛出的异常会逃逸成测试结束之后的 `unhandledRejection`（测试全绿、退出码却是 1）
 - `test/main-assembly.test.js` —— 用替身 Electron 加载真实 `main.js`；并在名为 `app.asar` 的目录里以「框架实例不同」的形态调用真实 IPC
 - `test/contract.test.js` / `test/text-integrity.test.js` —— 进程边界契约、**渲染层顶层声明不得与 preload 注入的全局同名**（v1.8.2~v1.8.5 白屏的根因）、文本编码完整性
 

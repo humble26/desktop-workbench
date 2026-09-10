@@ -67,10 +67,13 @@ test('11 个视图逐个渲染都不抛异常', async () => {
     const failures = [];
     for (const v of views) {
       try {
-        // 直接切视图并重绘（等价于点击侧栏）
-        const rendered = r.evalIn(`(function () {
+        // 直接切视图并重绘（等价于点击侧栏）。
+        // 必须 await render()：render() 是 async，某个视图里同步抛出的异常会变成
+        // 被拒绝的 Promise —— 不 await 就没人接，测试照旧全绿，
+        // 只在测试结束后冒出一个 unhandledRejection（退出码 1）。踩过这个坑。
+        const rendered = await r.evalIn(`(async function () {
           state.view = ${JSON.stringify(v)};
-          render();
+          await render();
           return { len: (document.querySelector('#view').innerHTML || '').length };
         })()`);
         if (!rendered || rendered.len < 50) failures.push(v + '(内容过少 ' + (rendered && rendered.len) + ')');
@@ -79,6 +82,16 @@ test('11 个视图逐个渲染都不抛异常', async () => {
       }
     }
     assert.deepStrictEqual(failures, [], '以下视图渲染失败：' + failures.join('；'));
+
+    // 空数据分支也要真的跑到：打卡视图在「还没有习惯」时应给出引导文案
+    // （这个分支过去因为桩缺 insertAdjacentHTML 而从未跑通过）
+    const empty = await r.evalIn(`(async function () {
+      state.view = 'checkins'; await render();
+      return String(document.querySelector('#view').innerHTML || '');
+    })()`);
+    assert.ok(empty.indexOf('添加一个想坚持的习惯吧') !== -1,
+      '打卡为空时缺少引导文案（空状态分支没渲染）');
+    assert.deepStrictEqual(r.errors, [], '渲染层报错：' + JSON.stringify(r.errors));
   } finally {
     h.dispose();
   }
@@ -152,9 +165,10 @@ test('带数据时视图仍能渲染（待办/便签/打卡/日历/分组都有�
     const failures = [];
     for (const v of views) {
       try {
-        const out = r.evalIn(`(function () {
+        // 同样必须 await render()：视图的异常要落到本测试上，而不是变成测试结束后的 unhandledRejection
+        const out = await r.evalIn(`(async function () {
           state.view = ${JSON.stringify(v)};
-          render();
+          await render();
           return { html: String(document.querySelector('#view').innerHTML || '') };
         })()`);
         if (!out || out.html.length < 50) { failures.push(v + '(内容过少)'); continue; }
@@ -167,7 +181,7 @@ test('带数据时视图仍能渲染（待办/便签/打卡/日历/分组都有�
     assert.deepStrictEqual(failures, [], '带数据时视图渲染失败：' + failures.join('；'));
 
     // 首页统计应反映数据（2 条待办中 1 条未完成）
-    const dash = r.evalIn('(function(){ state.view = "dashboard"; render(); return String(document.querySelector("#view").innerHTML || ""); })()');
+    const dash = await r.evalIn('(async function(){ state.view = "dashboard"; await render(); return String(document.querySelector("#view").innerHTML || ""); })()');
     assert.ok(dash.indexOf('待办未完成') !== -1, '首页未渲染统计卡');
     assert.ok(/class="v">1<\/div><div class="l">待办未完成/.test(dash), '首页未完成待办数应为 1');
     assert.deepStrictEqual(r.errors, [], '渲染层报错：' + JSON.stringify(r.errors));

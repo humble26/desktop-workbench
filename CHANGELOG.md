@@ -32,7 +32,8 @@ preload 通过 `contextBridge` 暴露的 `window.api` 是**不可配置、不可
 ### 防线（都能真的失败，已实测）
 - `test/contract.test.js` 新增静态检查：**渲染层顶层声明不得与 preload 注入的全局同名**（把 `const api` 加回去，该测试立刻失败）
 - `test/contract.test.js` 新增：错误兜底脚本必须最先加载、且不硬依赖其它脚本
-- `test/helper/renderer-harness.js`：`window.api` 按真实 Electron 形态定义为不可配置属性（并注明 Node 的 vm 不实现该规范检查，故真正的防线是上面的静态检查与真实 Electron 冒烟测试）
+- `test/helpers/renderer-harness.js`：`window.api` 按真实 Electron 形态定义为不可配置属性（并注明 Node 的 vm 不实现该规范检查，故真正的防线是上面的静态检查与真实 Electron 冒烟测试）
+- `test/helpers/renderer-harness.js` 的元素桩补齐 `insertAdjacentHTML` 等真实 DOM 方法，视图渲染测试改为 `await render()`：此前打卡页「还没有习惯」的空状态分支一调用就抛 `TypeError`，而 `render()` 是 `async`、调用点又没 `await`，异常逃逸成**测试结束之后的 unhandledRejection** —— 测试全绿、`npm test` 退出码却是 1，那个分支从未真正跑过。现在它是一条会被点名的断言（把桩里的 `insertAdjacentHTML` 删掉，测试立刻以 `checkins(v.insertAdjacentHTML is not a function)` 失败）
 - **`npm run test:smoke` 现在可以真正运行**：本机实测 **20/20 通过**（真实 Electron 31 + Chromium 126 加载真实页面：CSP 放行、侧栏与首页渲染、补丁落盘、并发写入不丢失、未知设置键保留）
 - 新增 `tools/diagnose/probe-gui.js`、`probe-api-descriptor.js`：在真实 Electron 里探测页面启动状态与 `window.api` 属性描述符
 
