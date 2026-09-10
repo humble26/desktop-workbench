@@ -114,8 +114,14 @@ function createRendererHarness(opts) {
   };
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-harness-'));
+  const storeFile = path.join(tmpDir, 'workbench-data.json');
+  // options.dataFile：把「已有的数据文件」直接喂给渲染层 ——
+  // 用于复现「渲染层 + 真实用户数据」这一组合（曾漏测：只测过全新数据）
+  if (options.dataFile && fs.existsSync(options.dataFile)) {
+    fs.copyFileSync(options.dataFile, storeFile);
+  }
   const store = createStore({
-    filePath: path.join(tmpDir, 'workbench-data.json'),
+    filePath: storeFile,
     backupDir: path.join(tmpDir, 'backups'),
     defaults: defaultData,
     migrate: migrate,
@@ -174,13 +180,25 @@ function createRendererHarness(opts) {
     addEventListener: (type) => { record.logs.push(['window.addEventListener', String(type)]); },
     removeEventListener: () => {},
     dispatchEvent: () => true,
-    api: api,
     console: {
       log: (...a) => record.logs.push(['log', a.join(' ')]),
       info: () => {}, debug: () => {},
       warn: (...a) => record.logs.push(['warn', a.join(' ')]),
       error: (...a) => { record.logs.push(['error', a.join(' ')]); record.errors.push({ where: 'console.error', message: a.join(' ') }); }
     }
+  });
+  /* window.api 按真实 Electron 的形态定义：contextBridge 暴露的是
+     「不可配置、不可写」属性（实测 { configurable:false, writable:false }）。
+     注意：Node 的 vm 并不实现「顶层 const/let 与不可配置全局属性同名即 SyntaxError」
+     这条规范检查（Chromium 会抛），所以这个桩**拦不住** `const api = window.api` 那类写法。
+     该问题的防线是：
+       · test/contract.test.js 的静态检查（已实测能抓出旧写法）
+       · npm run test:smoke —— 真实 Electron 里跑真实页面 */
+  Object.defineProperty(sandbox, 'api', {
+    value: api,
+    writable: false,
+    configurable: false,
+    enumerable: true
   });
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;

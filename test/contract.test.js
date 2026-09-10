@@ -222,6 +222,51 @@ test('测试与开发工具不参与打包（避免体积与信息暴露）', ()
   assert.ok(pkg.scripts && pkg.scripts.test, '缺少 npm test 脚本');
 });
 
+test('渲染层顶层声明不得与 preload 注入的全局同名（v1.8.2~1.8.4 白屏的根因）', () => {
+  // contextBridge 暴露的 window.api 是「不可配置、不可写」属性；脚本顶层的
+  // const/let 声明与它同名会直接抛 SyntaxError（整个文件失效 → 页面只剩静态骨架）。
+  // 原版单文件包在 IIFE 里没这个问题，拆成多文件后才变成全局词法声明。
+  const exposed = matchAll(preloadSrc, /exposeInMainWorld\(\s*'([^']+)'/g);
+  assert.ok(exposed.length > 0, '未能从 preload 提取暴露的全局名');
+  const problems = [];
+  for (const f of rendererFiles) {
+    const src = read(path.join(RENDERER, f));
+    for (const name of exposed) {
+      const re = new RegExp('^(?:const|let|var)\\s+' + name + '\\b', 'm');
+      if (re.test(src)) problems.push(f + ' 顶层声明了 ' + name);
+    }
+  }
+  assert.deepStrictEqual(problems, [],
+    '这些文件与 preload 注入的全局同名，会导致脚本整体失效：' + problems.join('；') +
+    '（改用 window.' + exposed.join('/window.') + ' 直接访问）');
+});
+
+test('错误兜底脚本最先加载，且不硬依赖其它脚本', () => {
+  const html = read(path.join(RENDERER, 'index.html'));
+  const scripts = matchAll(html, /<script src="([^"]+)"><\/script>/g);
+  assert.ok(scripts.indexOf('errortrap.js') !== -1, 'index.html 未加载 errortrap.js');
+  assert.ok(scripts.indexOf('errortrap.js') <= 2, 'errortrap.js 必须排在最前面（storeproto 之后）');
+
+  const src = read(path.join(RENDERER, 'errortrap.js'));
+  // 硬依赖：这些在启动期可能还不存在（甚至正因为它们所在的文件挂掉才需要兜底）
+  const forbidden = [
+    [/\besc\s*\(/, 'esc()（定义在 core.js）'],
+    [/(?:^|[^\w$])\$\s*\(/, '$()（定义在 core.js）'],
+    [/(?:^|[^.\w])api\s*\./, 'api.（preload 全局，且可能未注入）'],
+    [/\bstate\s*\./, 'state（定义在 core.js）']
+  ];
+  for (const [re, what] of forbidden) {
+    assert.strictEqual(re.test(src), false, 'errortrap.js 不应硬依赖 ' + what + ' —— 它是最后一道防线');
+  }
+  // 允许被 typeof 守卫的可选调用（仅在已经渲染成功后才会走到）
+  if (/\btoast\s*\(/.test(src)) {
+    assert.ok(/typeof toast === 'function'/.test(src), 'errortrap.js 里对 toast 的调用必须先用 typeof 守卫');
+  }
+  assert.ok(/function showFatalError/.test(src), 'errortrap.js 应定义 showFatalError');
+  assert.ok(/function markStage/.test(src), 'errortrap.js 应定义 markStage');
+  assert.ok(/addEventListener\('error'/.test(src), 'errortrap.js 应注册全局 error 处理');
+});
+
 test('界面状态字段不再被任何渲染层代码提交（仅允许出现在 storeproto 的清单里）', () => {
   const protoSrc = read(path.join(RENDERER, 'storeproto.js'));
   const ephemeral = matchAll(protoSrc, /'(_[A-Za-z]+|view|_exportedAt)'/g);

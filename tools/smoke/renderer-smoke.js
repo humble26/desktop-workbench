@@ -39,9 +39,28 @@ store.load();
 
 let passed = 0;
 const failures = [];
+const reportLines = [];
 function check(name, ok, extra) {
-  if (ok) { passed++; console.log('  \u2714 ' + name); }
-  else { failures.push(name + (extra ? ' → ' + extra : '')); console.log('  \u2716 ' + name + (extra ? '  → ' + extra : '')); }
+  const line = (ok ? '  ✔ ' : '  ✖ ') + name + (!ok && extra ? '  → ' + extra : '');
+  reportLines.push(line);
+  if (ok) { passed++; console.log(line); }
+  else { failures.push(name + (extra ? ' → ' + extra : '')); console.log(line); }
+}
+// 报告同时落盘：electron.exe 是 GUI 子系统程序，在部分环境（如自动化沙箱）里
+// 拿不到它的标准输出，写文件才能把结果带出来
+function writeReport(exitCode) {
+  try {
+    const p = path.join(ROOT, 'smoke-report.txt');
+    const head = [
+      '桌面工作台渲染层集成冒烟测试',
+      '时间: ' + new Date().toISOString(),
+      'Electron: ' + process.versions.electron + ' / Chromium: ' + process.versions.chrome,
+      '结果: 通过 ' + passed + ' 项' + (failures.length ? '，失败 ' + failures.length + ' 项' : '，全部通过'),
+      ''
+    ];
+    fs.writeFileSync(p, head.concat(reportLines).concat(['', '失败项：'].concat(failures.length ? failures.map(f => ' - ' + f) : ['（无）'])).join('\n'), 'utf8');
+    return p;
+  } catch (e) { return null; }
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 function readDisk() {
@@ -101,7 +120,7 @@ async function main() {
   const js = (code) => win.webContents.executeJavaScript(code, true);
 
   // ---- 1. 页面与脚本装载 ----
-  check('CSP 放行子目录脚本 shared/storeproto.js', await js('!!(window.WB && window.WB.proto && window.WB.proto.diffPatch)'));
+  check('CSP 放行页面脚本（storeproto.js 等同目录脚本均已加载）', await js('!!(window.WB && window.WB.proto && window.WB.proto.diffPatch)'));
   check('侧栏 11 个导航项已渲染（boot 完成）', (await js('document.querySelectorAll("#nav .navi").length')) === 11,
     '实际 ' + (await js('document.querySelectorAll("#nav .navi").length')));
   check('首页仪表盘已渲染', (await js('!!document.querySelector(".greet") && !!document.querySelector(".stats")')));
@@ -173,9 +192,12 @@ app.whenReady().then(async () => {
   try {
     code = await main();
   } catch (e) {
+    reportLines.push('冒烟测试异常：' + String((e && e.stack) || e));
     console.error('冒烟测试异常：', e);
     code = 1;
   }
   try { store.flush(); } catch (e) { /* ignore */ }
+  const reportPath = writeReport(code);
+  if (reportPath) console.log('报告已写入：' + reportPath);
   app.exit(code);
 });

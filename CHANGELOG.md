@@ -2,6 +2,45 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。完整下载见 [Releases](https://github.com/humble26/desktop-workbench/releases)。
 
+## v1.8.6 —— 找到并修复「界面空白」的真正根因
+
+### 真正的根因（在真实 Chromium 里复现出来的）
+
+```
+core.js:1     Uncaught SyntaxError: Identifier 'api' has already been declared
+actions.js:11 Uncaught ReferenceError: $ is not defined
+app.js:22     Uncaught (in promise) ReferenceError: proto is not defined
+```
+
+`renderer/core.js` 顶层的这一行是元凶：
+
+```js
+const api = window.api;   // ← 让整个应用白屏的一行
+```
+
+preload 通过 `contextBridge` 暴露的 `window.api` 是**不可配置、不可写**的属性（实测 `{ configurable:false, writable:false }`）。按语言规范，脚本顶层的 `const/let` 声明若与不可配置的全局属性同名，会**直接抛 SyntaxError** —— 于是 `core.js` 整个文件失效，连带其后所有脚本（`$ is not defined`、`proto is not defined`），页面只剩静态骨架：侧栏品牌可见、导航与内容全空。
+
+**为什么以前没有这个问题**：原版是单个 `app.js`，整体包在 `(function(){ ... })()` 里，`const api` 属于函数作用域；拆成多个脚本后它变成了**全局词法声明**，这才撞上 preload 注入的全局。
+
+**为什么错误提示也没出现**：`showFatalError` 原本就写在 `core.js` 里 —— 错误兜底和它要报告的故障在同一个文件里，文件一挂，兜底也没了。
+
+### 修复
+- `core.js` **不再声明 `api`**：脚本里裸写的 `api` 会沿全局对象解析到 `window.api`（实测 `typeof api === 'object'`），调用点无需改动；`boot()` 改为显式检查 `window.api`，以便 preload 缺失时给出提示
+- 新增 `renderer/errortrap.js`：把致命错误面板与全局 `error` / `unhandledrejection` 处理**移到最先加载、不依赖任何其它脚本**的文件里（自带转义、纯内联样式），确保任何脚本挂掉时错误都看得见
+- 启动阶段打点（`markStage` / `markRendered`）一并移入 errortrap
+
+### 防线（都能真的失败，已实测）
+- `test/contract.test.js` 新增静态检查：**渲染层顶层声明不得与 preload 注入的全局同名**（把 `const api` 加回去，该测试立刻失败）
+- `test/contract.test.js` 新增：错误兜底脚本必须最先加载、且不硬依赖其它脚本
+- `test/helper/renderer-harness.js`：`window.api` 按真实 Electron 形态定义为不可配置属性（并注明 Node 的 vm 不实现该规范检查，故真正的防线是上面的静态检查与真实 Electron 冒烟测试）
+- **`npm run test:smoke` 现在可以真正运行**：本机实测 **20/20 通过**（真实 Electron 31 + Chromium 126 加载真实页面：CSP 放行、侧栏与首页渲染、补丁落盘、并发写入不丢失、未知设置键保留）
+- 新增 `tools/diagnose/probe-gui.js`、`probe-api-descriptor.js`：在真实 Electron 里探测页面启动状态与 `window.api` 属性描述符
+
+### 说明
+v1.8.2 / v1.8.3 / v1.8.4 / v1.8.5 的空白界面都源于这一行（v1.8.2 另有一个独立缺陷：拆分工具丢了 `boot();`，已在 v1.8.3 修复）。v1.8.6 是第一个在真实 Chromium 中完成端到端验证的版本。
+
+测试总数：**141 项**（外加 20 项真实 Electron 冒烟测试）。
+
 ## v1.8.5 —— 让启动失败自己说话（自诊断）
 
 症状是「装上去界面一片空白，没有任何提示，也无从排查」。本版不再依赖用户描述现象，而是让应用主动报告：

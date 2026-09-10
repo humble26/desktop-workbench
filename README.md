@@ -110,7 +110,7 @@ npm install            # 安装依赖（node_modules 不进入版本库）
 npm start              # 本地运行
 
 npm test               # 139 项回归测试（无需图形环境）
-npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏）
+npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏，20 项断言）
 npm run check          # 语法检查（遍历所有 JS）
 npm run dist           # 生成 Windows 安装包（产物在 dist\）
 ```
@@ -119,7 +119,17 @@ npm run dist           # 生成 Windows 安装包（产物在 dist\）
 
 - `test/renderer-boot.test.js` —— 无浏览器环境下按 `index.html` 顺序把 23 个脚本加载进共享作用域，断言 `boot()` 能自行完成、11 个视图都能渲染、数据确实进入视图、且无 `console.error`
 - `test/main-assembly.test.js` —— 用替身 Electron 加载真实 `main.js`；并在名为 `app.asar` 的目录里以「框架实例不同」的形态调用真实 IPC
-- `test/contract.test.js` / `test/text-integrity.test.js` —— 进程边界契约、文本编码完整性（防止文档出现乱码）
+- `test/contract.test.js` / `test/text-integrity.test.js` —— 进程边界契约、**渲染层顶层声明不得与 preload 注入的全局同名**（v1.8.2~v1.8.5 白屏的根因）、文本编码完整性
+
+> 若你的环境设置了 `ELECTRON_RUN_AS_NODE`（某些自动化/沙箱环境会预设），Electron 会被强制成 Node 模式、
+> 无法创建窗口。跑 `npm run test:smoke` 前先清除它：
+>
+> ```powershell
+> Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+> npm run test:smoke
+> ```
+>
+> 该测试的报告会同时写入 `smoke-report.txt`（GUI 程序的标准输出在部分环境里拿不到）。
 
 诊断工具（`tools/diagnose/`）：
 

@@ -56,6 +56,8 @@
      拆分说明与校验：tools/refactor/split-app.js、tools/refactor/verify-decls.js、
      test/contract.test.js -->
 <script src="storeproto.js"></script>
+<!-- errortrap 必须紧跟其后：错误兜底不能依赖任何可能挂掉的脚本 -->
+<script src="errortrap.js"></script>
 <script src="dateutil.js"></script>
 <script src="importguard.js"></script>
 <script src="core.js"></script>

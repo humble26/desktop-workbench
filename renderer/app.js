@@ -8,17 +8,15 @@
 // ---------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------
-// 启动阶段标记：主进程会在窗口加载后检查 __wbBooted，
-// 若为 false 就弹出原生错误框并把 __wbStage 一并显示出来 ——
-// 这样即使页面完全没起来（脚本报错、IPC 全被拒），也能知道卡在哪一步。
-function markStage(stage) {
-  try { window.__wbStage = String(stage); } catch (e) { /* ignore */ }
-}
+// 启动阶段标记由 renderer/errortrap.js 提供（它最先加载，且不依赖任何其它脚本），
+// 主进程会在窗口加载后检查 __wbBooted / __wbStage，失败时弹原生对话框并写日志。
 markStage('app-loaded');
 
 async function boot() {
   markStage('boot-started');
-  if (!api) { markStage('failed: preload 未加载'); showFatalError('preload 未加载', '窗口未能注入 preload.js，因此拿不到数据与系统能力接口。\n请确认安装完整（重装一次通常可解决）。'); return; }
+  // 必须显式检查 window.api：core.js 故意不再声明 `const api`（见那里的注释），
+  // 因此 preload 缺失时裸写 api 会抛 ReferenceError，而不是被这里拦住
+  if (!window.api) { markStage('failed: preload 未加载'); showFatalError('preload 未加载', '窗口未能注入 preload.js，因此拿不到数据与系统能力接口。\n请确认安装完整（重装一次通常可解决）。'); return; }
   if (!proto) { markStage('failed: storeproto 未加载'); showFatalError('storeproto.js 未加载', '数据协议脚本缺失，已停止启动（继续运行会丢失改动）。\n请确认安装完整（重装一次通常可解决）。'); return; }
   let loaded = null;
   try {
@@ -57,7 +55,7 @@ async function boot() {
     syncLayout();
     initWinControls();
     render();
-    appRendered = true;                   // 之后的偶发错误降级为 toast，不再弹面板
+    markRendered();                       // 之后的偶发错误降级为 toast，不再弹面板
   } catch (e) {
     markStage('failed: 渲染异常 — ' + ((e && (e.message || e)) || e));
     showFatalError('界面渲染失败', ((e && (e.stack || e.message)) || String(e)) +
