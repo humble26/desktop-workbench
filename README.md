@@ -86,7 +86,7 @@ desktop-workbench/
 │   ├── dialogs.js search.js diagnostics.js actions.js guide.js
 │   ├── style.css           #   设计令牌 + 深色主题（同一套令牌给两套值）
 │   └── clipboard.* quickadd.* shot.* widget.*   # 四个独立小窗
-├── test/                   # 133 项回归测试（node:test，无需 Electron）
+├── test/                   # 139 项回归测试（node:test，无需 Electron）
 ├── tools/                  # 开发工具：语法检查、诊断、拆分与打包校验
 ├── ocr-data/               # 离线 OCR 语言模型（chi_sim + eng）
 ├── build/                  # 应用图标
@@ -109,7 +109,7 @@ desktop-workbench/
 npm install            # 安装依赖（node_modules 不进入版本库）
 npm start              # 本地运行
 
-npm test               # 133 项回归测试（无需图形环境）
+npm test               # 139 项回归测试（无需图形环境）
 npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏）
 npm run check          # 语法检查（遍历所有 JS）
 npm run dist           # 生成 Windows 安装包（产物在 dist\）
@@ -163,7 +163,8 @@ npm audit --registry=https://registry.npmjs.org
 ### v1.8.5
 - **启动失败自诊断**：渲染层看门狗（原生错误对话框 + `startup.log`）、启动阶段打点（`app-loaded → boot-started → data-loaded → rendered`）、单实例版本冲突提示
 - 修复自身诊断工具的 asar 读取偏移错误（曾误报「打包后缺少 `boot();`」）
-- 新增打包产物与源码逐字节比对、文本编码完整性检查
+- 新增打包产物与源码逐字节比对、文本编码完整性检查（防文档乱码）
+- 文档修复：README 与 v1.8.2 Release 说明的乱码已重写
 
 ### v1.8.4
 - **修复界面空白**：IPC 来源校验不再依赖 `senderFrame === sender.mainFrame` 这种 Electron 内部实现细节（打包环境下两者是不同实例，会把自身所有 IPC 拒掉），改用 `frame.parent` 判断并增加 `WebContents.getURL()` 回退
