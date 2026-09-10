@@ -147,9 +147,10 @@ test('独立小窗脚本仍然自成体系（各自 IIFE，不与主页共享作
 });
 
 test('主数据文件只能由 lib/store.js 写入（其他模块各自管理自己的数据源）', () => {
-  // 允许自带落盘的模块：store.js 管主数据，iconcache.js 管图标缓存目录。
+  // 允许自带落盘的模块：store.js 管主数据，iconcache.js 管图标缓存目录，
+  // renderer-watchdog.js 只写启动日志（用于把「白屏」变成可读的失败原因）。
   // 但它们都不允许碰 workbench-data.json —— 那个文件名只出现在 main.js 传给 store 的参数里。
-  const selfOwned = ['store.js', 'iconcache.js'];
+  const selfOwned = ['store.js', 'iconcache.js', 'renderer-watchdog.js'];
   const writers = libFiles.filter(f => selfOwned.indexOf(f) === -1)
     .filter(f => /writeFileSync|renameSync|unlinkSync/.test(read(path.join(ROOT, 'lib', f))));
   assert.deepStrictEqual(writers, [], '这些模块不应直接写文件：' + writers.join(', '));

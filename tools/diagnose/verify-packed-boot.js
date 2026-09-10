@@ -9,14 +9,18 @@ const path = require('path');
 const asar = process.argv[2] || path.join(__dirname, '..', '..', 'dist', 'win-unpacked', 'resources', 'app.asar');
 if (!fs.existsSync(asar)) { console.error('未找到：' + asar); process.exit(2); }
 
+// asar 头部：| UInt32=4 | UInt32=headerSize | UInt32=jsonStringSize | UInt32=jsonSize | JSON | 填充 |
+// 内容区起点是 8 + headerSize（**不是** 16 + jsonSize —— 头部 JSON 之后可能有填充字节，
+// 用后者会把所有文件读偏，曾因此误报「打包后的 app.js 缺少 boot();」）
 const fd = fs.openSync(asar, 'r');
 const head = Buffer.alloc(16);
 fs.readSync(fd, head, 0, 16, 0);
+const headerSize = head.readUInt32LE(4);
 const jsonSize = head.readUInt32LE(12);
 const jsonBuf = Buffer.alloc(jsonSize);
 fs.readSync(fd, jsonBuf, 0, jsonSize, 16);
 const index = JSON.parse(jsonBuf.toString('utf8'));
-const baseOffset = 16 + jsonSize;
+const baseOffset = 8 + headerSize;
 
 function find(node, prefix, target) {
   for (const name of Object.keys(node.files || {})) {

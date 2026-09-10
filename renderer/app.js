@@ -8,20 +8,32 @@
 // ---------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------
+// 启动阶段标记：主进程会在窗口加载后检查 __wbBooted，
+// 若为 false 就弹出原生错误框并把 __wbStage 一并显示出来 ——
+// 这样即使页面完全没起来（脚本报错、IPC 全被拒），也能知道卡在哪一步。
+function markStage(stage) {
+  try { window.__wbStage = String(stage); } catch (e) { /* ignore */ }
+}
+markStage('app-loaded');
+
 async function boot() {
-  if (!api) { showFatalError('preload 未加载', '窗口未能注入 preload.js，因此拿不到数据与系统能力接口。\n请确认安装完整（重装一次通常可解决）。'); return; }
-  if (!proto) { showFatalError('storeproto.js 未加载', '数据协议脚本缺失，已停止启动（继续运行会丢失改动）。\n请确认安装完整（重装一次通常可解决）。'); return; }
+  markStage('boot-started');
+  if (!api) { markStage('failed: preload 未加载'); showFatalError('preload 未加载', '窗口未能注入 preload.js，因此拿不到数据与系统能力接口。\n请确认安装完整（重装一次通常可解决）。'); return; }
+  if (!proto) { markStage('failed: storeproto 未加载'); showFatalError('storeproto.js 未加载', '数据协议脚本缺失，已停止启动（继续运行会丢失改动）。\n请确认安装完整（重装一次通常可解决）。'); return; }
   let loaded = null;
   try {
     loaded = await api.load();
   } catch (e) {
     // 关键：请求数据失败时必须**看得见**，不能像 v1.8.2 那样整屏空白
+    markStage('failed: api.load 被拒绝 — ' + ((e && (e.message || e)) || e));
     showFatalError('读取本地数据失败', '主进程拒绝了这次请求或读取过程出错：\n\n' +
       ((e && (e.stack || e.message)) || String(e)) +
       '\n\n可能原因：安装不完整、主进程启动异常、或权限问题。\n数据文件未被修改，可安全地重试或重装。');
     return;
   }
+  markStage('data-loaded');
   if (!loaded || (!loaded.data && !loaded.todos)) {
+    markStage('failed: 数据结构异常');
     showFatalError('读取本地数据失败', '主进程返回的数据为空或格式不正确：\n\n' + JSON.stringify(loaded).slice(0, 400));
     return;
   }
@@ -47,10 +59,14 @@ async function boot() {
     render();
     appRendered = true;                   // 之后的偶发错误降级为 toast，不再弹面板
   } catch (e) {
+    markStage('failed: 渲染异常 — ' + ((e && (e.message || e)) || e));
     showFatalError('界面渲染失败', ((e && (e.stack || e.message)) || String(e)) +
       '\n\n数据文件未被修改。可按「重试」，若反复出现请把上面的文字反馈给我。');
     return;
   }
+  // 走到这里说明界面已经起来了：主进程据此判定启动成功
+  markStage('rendered');
+  try { window.__wbBooted = true; } catch (e) { /* ignore */ }
   // 番茄钟计时刷新：无论停在哪个页面都持续走表，回到番茄钟页时时间保持正确
   setInterval(() => { try { pomoTick(); } catch (e) { /* ignore */ } }, 500);
   try { const info = await api.appInfo(); const v = $('#ver'); if (v && info.version) v.textContent = 'v' + info.version; } catch (e) { /* ignore */ }

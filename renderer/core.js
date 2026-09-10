@@ -195,6 +195,7 @@ function showFatalError(title, detail) {
 // 启动期（尚未渲染出内容）的任何错误都要可见；已渲染后的偶发错误只提示
 function reportError(title, detail) {
   try {
+    try { window.__wbStage = 'error: ' + title; } catch (e) { /* ignore */ }
     if (!appRendered) showFatalError(title, detail);
     else { try { console.error(title, detail); } catch (e) { /* ignore */ } if (typeof toast === 'function') toast(title); }
   } catch (e) { /* ignore */ }

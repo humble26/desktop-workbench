@@ -1,7 +1,7 @@
 {
   "name": "desktop-workbench",
   "productName": "桌面工作台",
-  "version": "1.8.4",
+  "version": "1.8.5",
   "description": "PC 桌面级个人工作台：桌面覆盖层 + 文件整理 + 快捷入口 + 待办/便签/打卡 + 剪贴板历史",
   "main": "main.js",
   "author": "Workbench",

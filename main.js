@@ -19,17 +19,47 @@ function logE(where, e) {
   try {
     console.warn('[workbench]', where, '::', (e && e.stack) || (e && e.message) || e);
   } catch (_) { /* ignore */ }
-}const { parseQuickTodo, buildQuickTodo } = require('./lib/quickadd.js');
+} 
+const { parseQuickTodo, buildQuickTodo } = require('./lib/quickadd.js');
 const usageDomain = require('./lib/usage.js');
 const { createIconCache } = require('./lib/iconcache.js');
+const { createRendererWatchdog } = require('./lib/renderer-watchdog.js');
 const { validatePatch } = require('./lib/patchguard.js');
 const proto = require('./renderer/storeproto.js');
 
 // ---------------------------------------------------------------------------
 // 单实例锁：防止重复启动
 // ---------------------------------------------------------------------------
+// 这里额外做了「谁在运行」的诊断：应用关闭窗口只是最小化到托盘，
+// 因此升级后如果旧实例还在托盘里，点新版本只会把旧窗口叫出来 ——
+// 现象就是「装了新版本但界面还是老样子」，极易误判为修复无效。
+// 本次未能取得锁时，把「运行中的版本」与「本次版本」写进启动日志，便于一眼看出。
+const runningInfoPath = () => path.join(app.getPath('userData'), 'running.json');
+
+function readRunningInfo() {
+  try { return JSON.parse(fs.readFileSync(runningInfoPath(), 'utf8')); } catch (e) { return null; }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  try {
+    const other = readRunningInfo();
+    const myVersion = app.getVersion();
+    const lines = [
+      '==== 桌面工作台启动日志（未创建窗口）====',
+      '时间: ' + new Date().toISOString(),
+      '本次启动版本: ' + myVersion,
+      '本次可执行文件: ' + process.execPath,
+      '资源目录: ' + __dirname,
+      '结果: 已有实例正在运行，本次启动直接退出（单实例锁）',
+      other ? ('运行中的实例版本: ' + other.version + '（pid ' + other.pid + '，启动于 ' + other.startedAt + '）') : '运行中的实例: 未记录到版本信息（可能是更早的版本）',
+      other && other.version !== myVersion
+        ? '⚠️ 版本不一致：你看到的窗口属于运行中的旧实例 ' + other.version + '，不是本次安装的 ' + myVersion + '。\n   请先在系统托盘图标上右键 →「退出」，再重新启动本版本。'
+        : '版本一致，本次只是重复启动。'
+    ];
+    fs.mkdirSync(path.dirname(runningInfoPath()), { recursive: true });
+    fs.writeFileSync(path.join(app.getPath('userData'), 'startup.log'), lines.join('\n'), 'utf8');
+  } catch (e) { /* 诊断失败不影响退出 */ }
   app.quit();
 } else {
   main();
@@ -109,6 +139,20 @@ function main() {
       return null;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // 渲染层启动看门狗：界面没起来时弹原生对话框 + 写启动日志
+  // （详见 lib/renderer-watchdog.js；用于把「白屏」变成可读的失败原因）
+  // ---------------------------------------------------------------------------
+  const watchdog = createRendererWatchdog({
+    logPath: path.join(app.getPath('userData'), 'startup.log'),
+    appVersion: app.getVersion(),
+    appPath: __dirname,
+    log: (msg) => { try { console.log('[watchdog] ' + msg); } catch (e) { /* ignore */ } },
+    showDialog: (title, detail) => {
+      try { dialog.showErrorBox(title, detail); } catch (e) { /* ignore */ }
+    }
+  });
 
   // 启动装载：主文件损坏/缺失时由 store 从最近备份自愈，并通知用户
   function loadStoreWithRecovery() {
@@ -295,6 +339,7 @@ function main() {
       if (!url.startsWith('file://')) e.preventDefault();
     });
 
+    watchdog.attach(win);
     win.once('ready-to-show', () => {
       applyLayout(currentLayout());
       showWin();
@@ -326,8 +371,7 @@ function main() {
   function sendToRenderer(channel, payload) {
     if (win && !win.isDestroyed()) {
       win.webContents.send(channel, payload);
-    }
-  }
+    }  }
 
   function buildTray() {
     const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
@@ -2115,6 +2159,18 @@ function main() {
   });
 
   app.whenReady().then(() => {
+    // 记录「谁在运行」：单实例锁那一段会读取它来诊断「装了新版还是老界面」
+    try {
+      fs.mkdirSync(path.dirname(runningInfoPath()), { recursive: true });
+      fs.writeFileSync(runningInfoPath(), JSON.stringify({
+        version: app.getVersion(),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        exe: process.execPath,
+        resources: __dirname
+      }), 'utf8');
+    } catch (e) { /* ignore */ }
+
     // 先装载数据（必要时从备份自愈、执行结构迁移并清理图标缓存），再建窗口 ——
     // 这样窗口首次读取设置时数据已就绪，恢复提示也能先于界面出现
     loadStoreWithRecovery();
@@ -2184,6 +2240,7 @@ function main() {
     usageHelper = null;
     try { saveUsageData(); } catch (e) { /* ignore */ } // 退出前落盘时间统计增量
     try { store.flush(); } catch (e) { /* ignore */ }   // 退出前把写合并窗口里的主数据落盘
+    try { fs.rmSync(runningInfoPath(), { force: true }); } catch (e) { /* ignore */ }
     try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }
   });
 
