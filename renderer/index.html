@@ -50,6 +50,33 @@
 <div id="modalRoot"></div>
 <div class="toast-wrap" id="toasts"></div>
 
+<!-- 脚本按依赖顺序普通加载（无构建步骤）。顶层声明在同一页面的全局作用域内跨文件
+     共享：function 声明挂到全局对象，const/let 进入全局词法环境，且必须在本文件
+     之后才能被其他文件读取 —— 所以顺序不能随意调整。
+     拆分说明与校验：tools/refactor/split-app.js、tools/refactor/verify-decls.js、
+     test/contract.test.js -->
+<script src="storeproto.js"></script>
+<script src="dateutil.js"></script>
+<script src="importguard.js"></script>
+<script src="core.js"></script>
+<script src="icons.js"></script>
+<script src="shell.js"></script>
+<script src="view-dashboard.js"></script>
+<script src="view-shortcuts.js"></script>
+<script src="view-files.js"></script>
+<script src="view-todos.js"></script>
+<script src="view-calendar.js"></script>
+<script src="view-notes.js"></script>
+<script src="view-checkins.js"></script>
+<script src="view-stats.js"></script>
+<script src="view-usage.js"></script>
+<script src="view-pomodoro.js"></script>
+<script src="view-settings.js"></script>
+<script src="diagnostics.js"></script>
+<script src="dialogs.js"></script>
+<script src="search.js"></script>
+<script src="actions.js"></script>
+<script src="guide.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

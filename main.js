@@ -6,11 +6,24 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
+const { createStore } = require('./lib/store.js');
+const { migrate } = require('./lib/migrate.js');
+const { defaultData, TIME_TRACK_DEFAULTS } = require('./lib/defaults.js');
+const { createTrustedSenderChecker } = require('./lib/security.js');
+const { createPowerShell, lastMeaningfulLine } = require('./lib/powershell.js');
+const { isSensitiveText } = require('./lib/sensitive.js');
+const dateutil = require('./renderer/dateutil.js');
 
-// 诊断日志：把原本静默吞掉的异常写入控制台，便于定位保存 / OCR / PowerShell / 窗口故障
+// 出错时把上下文写进控制台：静默 catch 会让问题无从排查（OCR / PowerShell / 数据导入等）
 function logE(where, e) {
-  try { console.warn('[workbench]', where, '::', (e && e.stack) || (e && e.message) || e); } catch (_) { /* ignore */ }
-}
+  try {
+    console.warn('[workbench]', where, '::', (e && e.stack) || (e && e.message) || e);
+  } catch (_) { /* ignore */ }
+}const { parseQuickTodo, buildQuickTodo } = require('./lib/quickadd.js');
+const usageDomain = require('./lib/usage.js');
+const { createIconCache } = require('./lib/iconcache.js');
+const { validatePatch } = require('./lib/patchguard.js');
+const proto = require('./renderer/storeproto.js');
 
 // ---------------------------------------------------------------------------
 // 单实例锁：防止重复启动
@@ -39,145 +52,92 @@ function main() {
 
   const storePath = () => path.join(app.getPath('userData'), 'workbench-data.json');
   const backupDir = () => path.join(app.getPath('userData'), 'backups');
-  const BACKUP_KEEP = 12;
 
   function pad2(n) { return String(n).padStart(2, '0'); }
   function fileDateTime(d) { d = d || new Date(); return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`; }
 
-  // 立即备份当前数据文件；返回备份文件路径（失败返回 null）
-  function doBackup() {
+  // ---------------------------------------------------------------------------
+  // 数据仓库：workbench-data.json 的唯一写入者（详见 lib/store.js）
+  // 渲染层提交「补丁」，主进程提交「变更」，两边都落在这里，因此并发写入不再互相覆盖。
+  // ---------------------------------------------------------------------------
+  const store = createStore({
+    filePath: storePath(),
+    backupDir: backupDir(),
+    defaults: defaultData,          // 函数声明已提升，此处仅传引用
+    migrate: migrate,
+    log: (msg) => { try { console.log('[store] ' + msg); } catch (e) { /* ignore */ } },
+    onChange: (info) => broadcastChanged(info)
+  });
+
+  function doBackup() { return store.backup(); }
+  function listBackups() { return store.listBackups(); }
+
+  // ---------------------------------------------------------------------------
+  // PowerShell 能力探测：剪贴板文件读写、快捷方式/图标兜底、时间统计采样都依赖它。
+  // 探测结果随 app:diagnostics 暴露给界面，避免「功能没反应但不知道为什么」。
+  // ---------------------------------------------------------------------------
+  const ps = createPowerShell({
+    log: (msg) => { try { console.log('[ps] ' + msg); } catch (e) { /* ignore */ } }
+  });
+  ps.onUpdate(() => sendDiagnostics());
+
+  // 图标缓存：图标落成独立 PNG，数据文件里只留 `icon:<sha1>.png` 短引用，
+  // 避免几十个快捷方式把 workbench-data.json 顶到几百 KB
+  const iconCache = createIconCache({
+    dir: path.join(app.getPath('userData'), 'icons'),
+    log: (msg) => { try { console.log('[icon] ' + msg); } catch (e) { /* ignore */ } }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 数据存储（读取走内存缓存，落盘由 lib/store.js 独占并做原子写 + 写合并）
+  // ---------------------------------------------------------------------------
+  // 图标缓存清理：只保留仍被快捷方式/文件分组引用的图标（数据文件里存的是 file:// URL）
+  function pruneIconCache() {
     try {
-      if (!fs.existsSync(storePath())) return null;
-      const dir = backupDir();
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const dest = path.join(dir, 'workbench-' + fileDateTime() + '.json');
-      fs.copyFileSync(storePath(), dest);
-      // 保留最近 N 份
-      const files = fs.readdirSync(dir).filter(f => /^workbench-[\d\-]+\.json$/.test(f)).sort();
-      while (files.length > BACKUP_KEEP) {
-        fs.unlinkSync(path.join(dir, files.shift()));
+      const d = loadStore();
+      const used = [];
+      for (const s of (d.shortcuts || [])) if (s && s.icon) used.push(s.icon);
+      for (const g of (d.groups || [])) {
+        for (const it of ((g && g.items) || [])) if (it && it.icon) used.push(it.icon);
       }
-      return dest;
+      const r = iconCache.prune(used);
+      if (r && r.removed) {
+        try { console.log('[icon] 已清理未引用图标 ' + r.removed + ' 个'); } catch (e) { /* ignore */ }
+      }
+      return r;
     } catch (e) {
-      logE('doBackup', e);
       return null;
     }
   }
-  function listBackups() {
-    try {
-      const dir = backupDir();
-      if (!fs.existsSync(dir)) return [];
-      return fs.readdirSync(dir).filter(f => /^workbench-[\d\-]+\.json$/.test(f)).sort().reverse().map(f => {
-        const full = path.join(dir, f);
-        return { name: f, path: full, size: fs.statSync(full).size };
-      });
-    } catch (e) { return []; }
-  }
 
-  // ---------------------------------------------------------------------------
-  // 数据存储（JSON 文件，原子写入）
-  // ---------------------------------------------------------------------------
-  function defaultData() {
-    return {
-      version: 1,
-      profile: { name: '我的工作台', greeting: '' },
-      todos: [],
-      notes: [],
-      checkins: [],
-      shortcuts: [],
-      groups: [],
-      settings: { mode: 'normal', autostart: false, accent: '#2f2e2b', layout: 'overlay', theme: 'light', dailyRemind: false, dailyRemindTime: '08:30', clipboardHistory: true, clipboardSensitive: true, timeTrack: TIME_TRACK_DEFAULTS }
-    };
-  }
-
-  // 统一数据归一化：校验顶层及嵌套字段类型，损坏或缺字段用默认值兜底，避免渲染期崩溃
-  function sanitizeData(parsed) {
-    const base = defaultData();
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return base;
-    const arr = (v) => (Array.isArray(v) ? v : []);
-    const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-    const out = Object.assign({}, base, parsed);
-    out.todos = arr(parsed.todos).filter(t => t && typeof t === 'object');
-    out.notes = arr(parsed.notes).filter(n => n && typeof n === 'object');
-    out.checkins = arr(parsed.checkins).filter(c => c && typeof c === 'object');
-    out.shortcuts = arr(parsed.shortcuts).filter(s => s && typeof s === 'object');
-    out.groups = arr(parsed.groups).filter(g => g && typeof g === 'object');
-    out.settings = Object.assign({}, base.settings, obj(parsed.settings));
-    out.profile = Object.assign({}, base.profile, obj(parsed.profile));
-    out.todos.forEach(t => {
-      if (!Array.isArray(t.subtasks)) t.subtasks = [];
-      if (!Array.isArray(t.doneHistory)) t.doneHistory = [];
-    });
-    out.groups.forEach(g => {
-      if (!Array.isArray(g.items)) g.items = [];
-      else g.items = g.items.filter(it => it && typeof it === 'object');
-    });
-    // autoOrganize 设置约束：watch 必须是字符串，rules 每项的 value/to 都必须是字符串
-    const ao = obj(out.settings.autoOrganize);
-    ao.watch = typeof ao.watch === 'string' ? ao.watch : '';
-    ao.rules = Array.isArray(ao.rules)
-      ? ao.rules.filter(r => r && typeof r === 'object' && typeof r.value === 'string' && typeof r.to === 'string')
-      : [];
-    out.settings.autoOrganize = ao;
-    return out;
-  }
-
-  // 尝试从备份恢复损坏的主数据文件
-  function autoRestore() {
-    try {
-      const raw = fs.readFileSync(storePath(), 'utf8');
-      JSON.parse(raw); // 主文件健康
-      return { ok: true };
-    } catch (e) { /* 主文件缺失或损坏 */ }
-    const bks = listBackups(); // 新到旧
-    for (const b of bks) {
+  // 启动装载：主文件损坏/缺失时由 store 从最近备份自愈，并通知用户
+  function loadStoreWithRecovery() {
+    store.load();
+    const diag = store.diagnostics();
+    if (diag.recoveredFrom) {
       try {
-        const content = fs.readFileSync(b.path, 'utf8');
-        JSON.parse(content);
-        fs.copyFileSync(b.path, storePath());
         if (Notification.isSupported()) {
-          new Notification({ title: '数据已恢复', body: '检测到主数据文件损坏或缺失，已自动从最近备份「' + b.name + '」恢复。' }).show();
+          new Notification({ title: '数据已恢复', body: '检测到主数据文件损坏或缺失，已自动从最近备份「' + diag.recoveredFrom + '」恢复。' }).show();
         }
-        return { ok: true, from: b.name };
-      } catch (e) { /* 该备份也损坏，尝试下一份 */ }
+      } catch (e) { /* ignore */ }
     }
-    return { ok: false };
+    if (diag.migrated && diag.migrated.steps && diag.migrated.steps.length) {
+      try { console.log('[store] 迁移明细：' + diag.migrated.steps.join('；')); } catch (e) { /* ignore */ }
+    }
+    return diag;
   }
 
-  function loadStore() {
-    try {
-      const raw = fs.readFileSync(storePath(), 'utf8');
-      const parsed = JSON.parse(raw);
-      return sanitizeData(parsed);
-    } catch (e) {
-      return defaultData();
-    }
-  }
+  // 权威副本（内存缓存引用）：调用方就地修改后需 saveStore() 落盘
+  function loadStore() { return store.read(); }
 
-  function saveStore(data) {
-    try {
-      const tmp = storePath() + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(data == null ? defaultData() : data), 'utf8');
-      fs.renameSync(tmp, storePath());
-      return true;
-    } catch (e) {
-      logE('saveStore', e);
-      return false;
-    }
-  }
+  // 落盘当前权威副本（兼容历史写法：saveStore(loadStore())）
+  function saveStore(data) { return store.adopt(data); }
 
   // ---------------------------------------------------------------------------
-  // 安全校验：只接受来自本应用 file:// 页面的 IPC 请求
+  // 安全校验：只接受来自本应用 renderer 目录下顶层页面的 IPC 请求
+  // （旧实现只判断 file:// 前缀，等于信任本机任意本地页面；实现见 lib/security.js）
   // ---------------------------------------------------------------------------
-  function isTrustedSender(event) {
-    try {
-      const url = event.senderFrame ? event.senderFrame.url : '';
-      const ok = url.startsWith('file://');
-      return ok;
-    } catch (e) {
-      return false;
-    }
-  }
+  const isTrustedSender = createTrustedSenderChecker({ rendererDir: path.join(__dirname, 'renderer') });
 
   // ---------------------------------------------------------------------------
   // 窗口相关
@@ -234,6 +194,9 @@ function main() {
         if (win.isDestroyed() || win.isMaximized() || win.isMinimized()) return;
         const b = win.getBounds();
         const d = loadStore();
+        const cur = d.settings.winBounds;
+        // 位置没变就不落盘：拖动/缩放会频繁触发这里，写合并也架不住每次都推修订号
+        if (cur && cur.x === b.x && cur.y === b.y && cur.width === b.width && cur.height === b.height) return;
         d.settings.winBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
         saveStore(d);
       } catch (e) { /* ignore */ }
@@ -413,29 +376,84 @@ function main() {
     return !!enable;
   }
 
+  // 全局快捷键注册状态：注册失败（被别的程序占用）过去是完全静默的，
+  // 用户只会觉得「快捷键没反应」。这里记录实际结果并暴露到诊断页。
+  const hotkeyState = {};   // accel → { label, ok, feature }
+  function recordHotkey(accel, label, feature) {
+    let ok = false;
+    try { ok = globalShortcut.isRegistered(accel); } catch (e) { ok = false; }
+    hotkeyState[accel] = { label: label, ok: ok, feature: feature };
+    if (!ok) {
+      try { console.log('[hotkey] 注册失败（可能被其他程序占用）：' + label); } catch (e) { /* ignore */ }
+    }
+    return ok;
+  }
+  function hotkeyStatus() {
+    return Object.keys(hotkeyState).map(k => ({
+      accel: k, label: hotkeyState[k].label, ok: hotkeyState[k].ok, feature: hotkeyState[k].feature
+    }));
+  }
+
   function registerHotkey() {
-    try {
-      globalShortcut.register(HOTKEY, toggleWin);
-    } catch (e) {
-      /* ignore */
-    }
-    try {
-      globalShortcut.register(HOTKEY_ADD, toggleQuickAdd);
-    } catch (e) {
-      /* ignore */
-    }
-    try {
-      globalShortcut.register(HOTKEY_SHOT, startScreenshot);
-    } catch (e) {
-      /* ignore */
+    // 显示/隐藏与快速添加：跨平台可用
+    try { globalShortcut.register(HOTKEY, toggleWin); } catch (e) { /* ignore */ }
+    recordHotkey(HOTKEY, HOTKEY_LABEL, '显示/隐藏工作台');
+    try { globalShortcut.register(HOTKEY_ADD, toggleQuickAdd); } catch (e) { /* ignore */ }
+    recordHotkey(HOTKEY_ADD, HOTKEY_ADD_LABEL, '全局快速添加');
+
+    // 截图取字依赖 desktopCapturer + 覆盖层布局，仅 Windows 提供；
+    // 非 Windows 平台不注册，避免「按了没反应」
+    if (process.platform === 'win32') {
+      try { globalShortcut.register(HOTKEY_SHOT, startScreenshot); } catch (e) { /* ignore */ }
+      recordHotkey(HOTKEY_SHOT, HOTKEY_SHOT_LABEL, '截图 OCR 取字');
     }
   }
 
-  // 数据变化广播：主窗口据此重新渲染（全局快速添加 / 自动顺延等会触发）
-  function broadcastChanged() {
-    try {
-      if (win && !win.isDestroyed()) win.webContents.send('data:changed');
+  // 数据变化广播：携带修订号与来源，渲染层据此决定是否回灌
+  // origin='renderer' 表示渲染层自己刚提交的补丁，无需再回灌（避免重绘打断输入）
+  function broadcastChanged(info) {    try {
+      const payload = {
+        rev: (info && info.rev) || store.getRev(),
+        origin: (info && info.origin) || 'main'
+      };
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w || w.isDestroyed()) continue;
+        w.webContents.send('data:changed', payload);
+      }
     } catch (e) { /* ignore */ }
+  }
+
+  // 运行环境诊断（设置页展示；也是出问题时的唯一排查入口）
+  function appDiagnostics() {
+    return {
+      version: app.getVersion(),
+      platform: process.platform,
+      userData: app.getPath('userData'),
+      hotkey: HOTKEY_LABEL,
+      powershell: ps.diagnostics(),
+      store: store.diagnostics(),
+      usage: {
+        enabled: usageTrackingEnabled(),
+        sampling: !!usageHelper,
+        paused: usagePaused
+      },
+      clipboard: {
+        historyEnabled: (loadStore().settings || {}).clipboardHistory !== false,
+        items: (clipData.items || []).length
+      },
+      hotkeys: hotkeyStatus(),
+      icons: (function () { try { return iconCache.stats(); } catch (e) { return { files: 0, bytes: 0 }; } })()
+    };
+  }
+
+  function sendDiagnostics() {
+    try {
+      const payload = appDiagnostics();
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w || w.isDestroyed()) continue;
+        w.webContents.send('app:diagnostics', payload);
+      }
+    } catch (e) { /* 界面还没起来时忽略 */ }
   }
 
   // 毛玻璃背景（Windows 11 原生亚克力）。仅在覆盖桌面模式生效。
@@ -449,58 +467,18 @@ function main() {
 
   // -----------------------------------------------------------
   // 全局快速添加：Win+Alt+T 弹出小窗，回车即生成待办
+  // 文本解析在 lib/quickadd.js（纯函数，有单测）
   // -----------------------------------------------------------
-  function parseQuickTodo(raw) {
-    const tk = new Date();
-    const padQ = n => String(n).padStart(2, '0');
-    const addDaysQ = n => { const d = new Date(tk); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${padQ(d.getMonth() + 1)}-${padQ(d.getDate())}`; };
-    let text = String(raw || '').trim();
-    let due = '';
-    let dueTime = '';
-
-    // 优先级：时间内的日期提示。支持 今天/明天/后天/昨天/YYYY-MM-DD/MM月DD日
-    const dateMatcher = /(今天|明天|后天|昨(?:天|日)|\d{4}\s*[-\/]\s*\d{1,2}\s*[-\/]\s*\d{1,2}|\d{1,2}\s*月\s*\d{1,2}\s*日)/;
-    const dm = text.match(dateMatcher);
-    if (dm) {
-      const w = dm[1];
-      if (w === '今天') due = addDaysQ(0);
-      else if (w === '明天') due = addDaysQ(1);
-      else if (w === '后天') due = addDaysQ(2);
-      else if (w === '昨天' || w === '昨日') due = addDaysQ(-1);
-      else if (/\d{1,2}月\d{1,2}日/.test(w)) {
-        const mm = w.match(/(\d{1,2})月(\d{1,2})/);
-        due = `${tk.getFullYear()}-${padQ(+mm[1])}-${padQ(+mm[2])}`;
-      } else if (/\d{4}/.test(w)) {
-        const p = w.split(/[-\/]/).map(x => +x);
-        due = `${p[0]}-${padQ(p[1])}-${padQ(p[2])}`;
-      }
-      text = text.replace(dm[1], ' ').trim();
-    }
-    // 时间提示，例如 15:30
-    const tm = text.match(/(\d{1,2}):(\d{2})/);
-    if (tm) {
-      const h = +tm[1], m = +tm[2];
-      if (h >= 0 && h <= 23 && m <= 59) dueTime = `${padQ(h)}:${padQ(m)}`;
-      text = text.replace(tm[0], ' ').trim();
-    }
-    text = text.replace(/[，。！？,.\s；;]+$/g, '').trim();
-    return { text, due, dueTime };
-  }
-
   function addQuickTodo(raw) {
     try {
       const parsed = parseQuickTodo(raw);
       if (!parsed.text) return { ok: false, msg: '内容不能为空' };
-      const d = loadStore();
-      d.todos = d.todos || [];
-      d.todos.unshift({
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-        text: parsed.text, level: 'mid', done: false,
-        date: dateKeyMain(), due: parsed.due, dueTime: parsed.dueTime,
-        repeat: 'none', note: '', subtasks: [], doneHistory: [], remind: 0
+      const todo = buildQuickTodo(parsed, { date: dateKeyMain() });
+      const res = store.mutate(d => {
+        if (!Array.isArray(d.todos)) d.todos = [];
+        d.todos.unshift(todo);
       });
-      saveStore(d);
-      broadcastChanged();
+      if (!res.ok) return { ok: false, msg: '添加失败' };
       return { ok: true, msg: '已添加待办' };
     } catch (e) {
       return { ok: false, msg: '添加失败' };
@@ -558,19 +536,7 @@ function main() {
 
   function clipUid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-  // 敏感内容识别：JWT / 私钥 / 口令 / API Key 等不写入剪贴板历史，避免明文落盘
-  function isSensitiveText(t) {
-    if (!t) return false;
-    const s = String(t);
-    if (/\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}/.test(s)) return true;             // JWT
-    if (/(-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----)/.test(s)) return true;      // 私钥
-    if (/\b(password|passwd|pwd|secret|api[-_]?key|token|access[-_]?key|client[-_]?secret|登录口令)\s*[=:：]\s*\S{8,}/i.test(s)) return true;
-    if (/\bgh[pousr]_[A-Za-z0-9]{20,}\b/.test(s)) return true;                             // GitHub token
-    if (/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/.test(s)) return true;                           // Slack token
-    if (/\bAKIA[A-Z0-9]{16}\b/.test(s)) return true;                                       // AWS Access Key
-    return false;
-  }
-
+  // 剪贴板敏感内容过滤是否开启（默认开启；设置页可关闭）
   function clipSensitiveEnabled() {
     try { return (loadStore().settings || {}).clipboardSensitive !== false; } catch (e) { return true; }
   }
@@ -635,30 +601,33 @@ function main() {
 
   // Electron 只暴露 CF_HDROP 的第一个文件（FileNameW）；完整列表经 PowerShell FileDropList 异步补全
   function enrichClipFiles(item) {
+    if (!ps.isAvailable()) { ps.noteFeature('clipboard-file-list', false, 'PowerShell 不可用，只能记录第一个文件'); return; }
     try {
-      const ps = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; (Get-Clipboard -Format FileDropList) -join "|"';
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
-        { windowsHide: true, encoding: 'utf8', timeout: 6000 }, (err, stdout) => {
-          try {
-            if (err || !stdout) return;
-            const list = String(stdout).replace(/^\uFEFF/, '').trim().split('|').map(s => s.trim()).filter(Boolean);
-            if (!list.length || !item.files || String(item.files[0]).toLowerCase() !== String(list[0]).toLowerCase()) return;
-            // 剪贴板已变成别的内容时放弃补全
-            const cur = readClipFiles();
-            if (!cur.length || String(cur[0]).toLowerCase() !== String(list[0]).toLowerCase()) return;
-            item.files = list;
-            item.text = list.join('\n');
-            item._sig = 'f:' + list.join('|').toLowerCase();
-            const dup = clipData.items.find(x => x !== item && x._sig === item._sig);
-            if (dup) {
-              dup.time = Math.max(dup.time, item.time);
-              clipData.items = clipData.items.filter(x => x !== item);
-            }
-            sortClipItems();
-            saveClipData();
-            notifyClipChanged();
-          } catch (e) { /* ignore */ }
-        });
+      const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; (Get-Clipboard -Format FileDropList) -join "|"';
+      ps.run(ps.scriptArgs(script), { timeout: 6000 }).then((r) => {
+        try {
+          if (!r.ok) { ps.noteFeature('clipboard-file-list', false, r.error || 'Get-Clipboard 调用失败'); return; }
+          ps.noteFeature('clipboard-file-list', true);
+          const stdout = lastMeaningfulLine(r.stdout);   // 容忍 PowerShell 混入的警告行
+          if (!stdout) return;
+          const list = String(stdout).split('|').map(s => s.trim()).filter(Boolean);
+          if (!list.length || !item.files || String(item.files[0]).toLowerCase() !== String(list[0]).toLowerCase()) return;
+          // 剪贴板已变成别的内容时放弃补全
+          const cur = readClipFiles();
+          if (!cur.length || String(cur[0]).toLowerCase() !== String(list[0]).toLowerCase()) return;
+          item.files = list;
+          item.text = list.join('\n');
+          item._sig = 'f:' + list.join('|').toLowerCase();
+          const dup = clipData.items.find(x => x !== item && x._sig === item._sig);
+          if (dup) {
+            dup.time = Math.max(dup.time, item.time);
+            clipData.items = clipData.items.filter(x => x !== item);
+          }
+          sortClipItems();
+          saveClipData();
+          notifyClipChanged();
+        } catch (e) { /* 单条补全失败不影响其他条目 */ }
+      });
     } catch (e) { /* ignore */ }
   }
 
@@ -716,13 +685,16 @@ function main() {
       if (enabled) {
         globalShortcut.register(HOTKEY_CLIP, toggleClipboard);
         clipHotkeyOn = globalShortcut.isRegistered(HOTKEY_CLIP);
+        recordHotkey(HOTKEY_CLIP, HOTKEY_CLIP_LABEL, '剪贴板历史');
       } else {
         globalShortcut.unregister(HOTKEY_CLIP);
         clipHotkeyOn = false;
+        delete hotkeyState[HOTKEY_CLIP];
       }
     } catch (e) {
       clipHotkeyOn = false;
     }
+    sendDiagnostics();
   }
 
   // 每次轮询：读取当前剪贴板并和上次签名比较，变化才入库
@@ -760,7 +732,10 @@ function main() {
         if (it) enrichClipFiles(it);             // 异步补全多文件列表
       }
       else if (img) addClipItem({ type: 'image', img });
-      else if (text.trim() && text.length <= CLIP_TEXT_MAX) { if (!clipSensitiveEnabled() || !isSensitiveText(text)) addClipItem({ type: 'text', text }); }
+      else if (text.trim() && text.length <= CLIP_TEXT_MAX) {
+        // 敏感内容（JWT / 私钥 / 口令 / API Key 等）默认不写入历史，避免凭据明文落盘
+        if (!clipSensitiveEnabled() || !isSensitiveText(text)) addClipItem({ type: 'text', text });
+      }
     } catch (e) { /* ignore */ }
   }
 
@@ -787,6 +762,17 @@ function main() {
     return clipData.items.find(x => x.id === id) || null;
   }
 
+  // 把文件选区写回剪贴板（CF_HDROP）。PowerShell 不可用时显式记录降级原因。
+  function copyFilesViaPowerShell(script) {
+    if (!ps.isAvailable()) {
+      ps.noteFeature('clipboard-file-writeback', false, 'PowerShell 不可用，无法把文件写回剪贴板');
+      return;
+    }
+    ps.run(ps.scriptArgs(script), { timeout: 8000 }).then((r) => {
+      ps.noteFeature('clipboard-file-writeback', r.ok, r.error || 'Set-Clipboard 调用失败');
+    });
+  }
+
   function copyClipItem(id) {
     const it = findClipItem(id);
     if (!it) return { ok: false, msg: '条目不存在' };
@@ -799,8 +785,7 @@ function main() {
       } else if (it.type === 'file' && Array.isArray(it.files) && it.files.length) {
         // Electron 无法直接写文件选区，借 PowerShell Set-Clipboard 恢复 CF_HDROP
         const list = it.files.map(f => "'" + String(f).replace(/'/g, "''") + "'").join(',');
-        spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -Path ' + list],
-          { windowsHide: true, stdio: 'ignore' }).on('error', () => { /* ignore */ });
+        copyFilesViaPowerShell('Set-Clipboard -Path ' + list);
       }
       it.time = Date.now();
       sortClipItems();
@@ -946,31 +931,10 @@ function main() {
   let usageLastTick = 0;
   let usagePaused = false;        // 锁屏期间暂停
 
-  const TIME_TRACK_RULES = [
-    { match: 'exe', value: 'chrome', category: '浏览' },
-    { match: 'exe', value: 'msedge', category: '浏览' },
-    { match: 'exe', value: 'firefox', category: '浏览' },
-    { match: 'exe', value: 'code', category: '开发' },
-    { match: 'exe', value: 'devenv', category: '开发' },
-    { match: 'exe', value: 'wechat', category: '沟通' },
-    { match: 'exe', value: 'weixin', category: '沟通' },
-    { match: 'exe', value: 'qq', category: '沟通' },
-    { match: 'exe', value: 'dingtalk', category: '沟通' },
-    { match: 'exe', value: 'wemeet', category: '沟通' }
-  ];
-  const TIME_TRACK_DEFAULTS = { enabled: false, idleSeconds: 300, recordTitles: false, rules: TIME_TRACK_RULES };
-
-  // 读取并规范化时间统计设置（老数据缺省时回退默认值）
+  // 读取并规范化时间统计设置（老数据缺省时回退默认值；纯逻辑在 lib/usage.js）
   function ttSettings() {
     const d = loadStore();
-    let t = d.settings && d.settings.timeTrack;
-    if (!t || typeof t !== 'object') t = {};
-    return {
-      enabled: t.enabled === true,
-      idleSeconds: [120, 300, 600].indexOf(t.idleSeconds) !== -1 ? t.idleSeconds : 300,
-      recordTitles: t.recordTitles === true,
-      rules: Array.isArray(t.rules) ? t.rules.filter(r => r && r.value && r.category) : TIME_TRACK_DEFAULTS.rules
-    };
+    return usageDomain.normalizeTrackSettings(d.settings && d.settings.timeTrack, TIME_TRACK_DEFAULTS);
   }
 
   function loadUsageData() {
@@ -1003,91 +967,42 @@ function main() {
     } catch (e) { /* ignore */ }
   }
 
-  function getUsageDay(dk) {
-    let d = usageData.days[dk];
-    if (!d || typeof d !== 'object') { d = { apps: {}, titles: {} }; usageData.days[dk] = d; }
-    if (!d.apps || typeof d.apps !== 'object') d.apps = {};
-    if (!d.titles || typeof d.titles !== 'object') d.titles = {};
-    return d;
-  }
+  function getUsageDay(dk) { return usageDomain.ensureDay(usageData, dk); }
 
-  // 分类：本应用自身 → 「桌面工作台」；否则按规则顺序匹配（exe 不分大小写、
-  // 标题规则对进程友好名做包含匹配），未命中归「其他」。分类在汇总时计算，
-  // 规则修改后对历史数据即时生效。
+  // 分类：本应用自身 → 「桌面工作台」；否则按规则顺序匹配（实现见 lib/usage.js）。
+  // 分类在汇总时计算，规则修改后对历史数据即时生效。
   function usageCategoryOf(exeKey, displayName) {
-    if (exeKey === '桌面工作台') return '桌面工作台';
-    const cfg = ttSettings();
-    const nameL = String(displayName || '').toLowerCase();
-    const rules = cfg.rules || [];
-    for (let i = 0; i < rules.length; i++) {
-      const r = rules[i];
-      const v = String(r.value || '').trim().toLowerCase();
-      if (!v || !r.category) continue;
-      if (r.match === 'title') {
-        if (nameL.indexOf(v) !== -1) return r.category;
-      } else if (String(exeKey || '').toLowerCase().indexOf(v) !== -1) {
-        return r.category;
-      }
-    }
-    return '其他';
+    return usageDomain.categoryOf(exeKey, displayName, ttSettings().rules);
   }
 
   function addUsageSeconds(sample, seconds) {
     try {
-      if (!sample || !sample.exe || !(seconds > 0)) return;
-      const day = getUsageDay(dateKeyMain());
-      const key = String(sample.exe).toLowerCase();
-      const rec = day.apps[key] || (day.apps[key] = { name: sample.app || sample.exe, seconds: 0 });
-      if (sample.app) rec.name = sample.app;
-      rec.seconds = (rec.seconds || 0) + seconds;
-      // 长尾合并：单日应用键超过 2000 时，把时长最短的合并进 __other__
-      const keys = Object.keys(day.apps);
-      if (keys.length > 2000) {
-        keys.sort((a, b) => (day.apps[b].seconds || 0) - (day.apps[a].seconds || 0));
-        let other = day.apps['__other__'] || (day.apps['__other__'] = { name: '其他', seconds: 0 });
-        for (const k of keys.slice(2000)) {
-          if (k === '__other__') continue;
-          other.seconds += day.apps[k].seconds || 0;
-          delete day.apps[k];
-        }
-      }
-      if (ttSettings().recordTitles && sample.title) {
-        const tk = (sample.app || sample.exe) + '|' + String(sample.title).slice(0, 120);
-        day.titles[tk] = (day.titles[tk] || 0) + seconds;
-      }
+      // 长尾合并等细节在 lib/usage.js；标题是否落盘由设置决定
+      usageDomain.addSeconds(usageData, dateKeyMain(), sample, seconds, ttSettings().recordTitles);
     } catch (e) { /* ignore */ }
   }
 
-  // PowerShell 辅助脚本：user32 取前台窗口句柄 → 标题 / PID → Get-Process 取进程名与描述
-  const USAGE_PS_SCRIPT = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)",
-    "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Text;public class FGW{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern int GetWindowTextW(IntPtr h,[MarshalAs(UnmanagedType.LPWStr)]StringBuilder t,int c);[DllImport(\"user32.dll\")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);}'",
-    "while ($true) {",
-    "  $h = [FGW]::GetForegroundWindow()",
-    "  $wpid = [uint32]0",
-    "  [FGW]::GetWindowThreadProcessId($h, [ref]$wpid) | Out-Null",
-    "  $sb = New-Object System.Text.StringBuilder 512",
-    "  [FGW]::GetWindowTextW($h, $sb, 512) | Out-Null",
-    "  $title = $sb.ToString()",
-    "  $exe = ''; $app = ''",
-    "  if ($wpid -gt 0) { $p = Get-Process -Id $wpid -ErrorAction SilentlyContinue; if ($p) { $exe = $p.ProcessName; $app = $p.Description; if (-not $app) { $app = $exe } } }",
-    "  $o = @{ exe = $exe; app = $app; title = $title } | ConvertTo-Json -Compress",
-    "  [Console]::Out.WriteLine($o)",
-    "  [Console]::Out.Flush()",
-    "  Start-Sleep -Seconds 5",
-    "}"
-  ].join('\n') + '\n';
-
   function startUsageHelper() {
     if (process.platform !== 'win32' || usageHelper) return;
+    // PowerShell 不可用（被策略禁用/未探测完成）时显式降级，并把原因暴露给界面，
+    // 而不是让采样进程反复拉起失败、用户只看到「没有数据」。
+    if (!ps.isAvailable()) {
+      ps.noteFeature('usage-helper', false, ps.isChecked()
+        ? 'PowerShell 不可用（' + (ps.diagnostics().reason || '未知原因') + '），时间统计无法采样'
+        : '正在检测 PowerShell 环境…');
+      return;
+    }
+    if (!ps.diagnostics().canAddType) {
+      ps.noteFeature('usage-helper', false, '当前 PowerShell 语言模式为 ' + ps.diagnostics().languageMode + '，不允许 Add-Type，无法读取前台窗口');
+      return;
+    }
     try {
       usageHelperBuf = '';
       // 说明：实测 -Command -（stdin 传脚本）对本脚本会静默卡住，故改用 -EncodedCommand
       // （UTF-16LE base64，脚本约 2KB，远小于命令行长度限制），效果等同且无临时文件
-      usageHelper = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(USAGE_PS_SCRIPT, 'utf16le').toString('base64')], {
-        windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
-      });
+      usageHelper = ps.spawn(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
+        Buffer.from(usageDomain.USAGE_PS_SCRIPT, 'utf16le').toString('base64')]);
+      if (!usageHelper) return;
       usageHelperLastOut = Date.now();
       usageHelperStartedAt = Date.now();
       usageHelper.stdout.on('data', (chunk) => {
@@ -1106,11 +1021,15 @@ function main() {
                 app: String(o.app || '') || String(o.exe || ''),
                 title: String(o.title || '')
               };
+              ps.noteFeature('usage-helper', true);
             }
           } catch (e) { /* 忽略无法解析的行 */ }
         }
       });
       usageHelper.stderr.on('data', () => { /* 忽略 */ });
+      usageHelper.on('error', (err) => {
+        ps.noteFeature('usage-helper', false, '采样进程启动失败：' + String((err && err.message) || err));
+      });
       usageHelper.on('exit', () => {
         usageHelper = null;
         // 异常退出（含被看门狗击杀）后由 reconcileUsage 自动拉起
@@ -1118,6 +1037,7 @@ function main() {
       });
     } catch (e) {
       usageHelper = null;
+      ps.noteFeature('usage-helper', false, String((e && e.message) || e));
     }
   }
 
@@ -1182,25 +1102,17 @@ function main() {
   }
 
   function emptyUsageSummary() {
-    return {
-      supported: process.platform === 'win32',
-      enabled: false,
-      dayCount: 0,
-      today: { total: 0, categories: [], topApps: [] },
-      daily: [],
-      topApps: [],
-      categories: [],
-      topTitles: [],
-      pomodoros: { today: 0, week: 0 }
-    };
+    return usageDomain.emptySummary(process.platform === 'win32');
   }
 
   function usageSummary(days) {
     if (!usageLoaded) loadUsageData();
     const cfg = ttSettings();
-    const out = emptyUsageSummary();
-    out.enabled = cfg.enabled;
-    if (process.platform !== 'win32') return out;
+    if (process.platform !== 'win32') {
+      const out = usageDomain.emptySummary(false);
+      out.enabled = cfg.enabled;
+      return out;
+    }
     const today = dateKeyMain();
 
     // 近 days 天（含今天）逐日聚合
@@ -1210,72 +1122,19 @@ function main() {
       d.setDate(d.getDate() - i);
       dayKeys.push(dateKeyMain(d));
     }
-    const appAgg = new Map();
-    const catAgg = new Map();
-    const todayCats = new Map();
-    const todayApps = [];
-    let todayTotal = 0;
-    out.daily = dayKeys.map(dk => {
-      const day = usageData.days[dk];
-      let total = 0;
-      if (day && day.apps) {
-        for (const k of Object.keys(day.apps)) {
-          const rec = day.apps[k] || {};
-          const sec = rec.seconds || 0;
-          total += sec;
-          const name = rec.name || k;
-          const cat = usageCategoryOf(k, name);
-          const prev = appAgg.get(k);
-          if (prev) prev.seconds += sec;
-          else appAgg.set(k, { name, seconds: sec });
-          catAgg.set(cat, (catAgg.get(cat) || 0) + sec);
-          if (dk === today) {
-            todayTotal += sec;
-            todayCats.set(cat, (todayCats.get(cat) || 0) + sec);
-            todayApps.push({ key: k, name, seconds: sec });
-          }
-        }
-      }
-      return { date: dk, total };
+
+    let pomoDone = {};
+    try { pomoDone = loadStore().pomoDone || {}; } catch (e) { pomoDone = {}; }
+
+    // 聚合逻辑在 lib/usage.js（纯函数，有单测）
+    return usageDomain.summarize(usageData, {
+      dayKeys: dayKeys,
+      today: today,
+      enabled: cfg.enabled,
+      recordTitles: cfg.recordTitles,
+      pomoDone: pomoDone,
+      categoryOf: usageCategoryOf
     });
-
-    const sortBySec = (arr) => arr.sort((a, b) => b.seconds - a.seconds);
-    const appList = sortBySec(Array.from(appAgg.values())).slice(0, 10);
-    out.today.total = todayTotal;
-    out.today.categories = sortBySec(Array.from(todayCats.entries()).map(([name, seconds]) => ({ name, seconds })));
-    out.today.topApps = sortBySec(todayApps).slice(0, 10);
-    out.topApps = appList;
-    out.categories = sortBySec(Array.from(catAgg.entries()).map(([name, seconds]) => ({ name, seconds })));
-
-    if (cfg.recordTitles) {
-      const tAgg = new Map();
-      for (const dk of dayKeys) {
-        const day = usageData.days[dk];
-        if (!day || !day.titles) continue;
-        for (const k of Object.keys(day.titles)) {
-          tAgg.set(k, (tAgg.get(k) || 0) + (day.titles[k] || 0));
-        }
-      }
-      out.topTitles = sortBySec(Array.from(tAgg.entries()).map(([k, seconds]) => {
-        const i = k.indexOf('|');
-        return { app: k.slice(0, i), title: k.slice(i + 1), seconds };
-      })).slice(0, 10);
-    }
-
-    out.dayCount = Object.keys(usageData.days).filter(k => {
-      const day = usageData.days[k];
-      return day && day.apps && Object.keys(day.apps).length > 0;
-    }).length;
-
-    // 番茄钟标注（弱耦合：只读主数据里的每日完成数）
-    try {
-      const pd = loadStore()._pomoDone || {};
-      let week = 0;
-      for (const dk of dayKeys) week += pd[dk] || 0;
-      out.pomodoros = { today: pd[today] || 0, week };
-    } catch (e) { out.pomodoros = { today: 0, week: 0 }; }
-
-    return out;
   }
 
   // -----------------------------------------------------------
@@ -1381,7 +1240,9 @@ function main() {
     cancelShot();
     try {
       const b64 = String(dataUrl || '').split(',')[1] || '';
-      if (!b64 || b64.length > 40e6) { showShotResult(''); return { ok: false }; } // 尺寸上限：约 30MB 的 Base64
+      // 边界限制：超大选区（例如整屏 4K 高 DPI）会让 base64 与解码缓冲把内存顶上去，
+      // 这里给出明确上限并直接放弃，而不是让 OCR 卡死进程
+      if (!b64 || b64.length > 40e6) { showShotResult(''); return { ok: false }; }
       const buf = Buffer.from(b64, 'base64');
       if (!buf.length || buf.length > 30 * 1024 * 1024) { showShotResult(''); return { ok: false }; }
       const tmp = path.join(os.tmpdir(), 'workbench-shot-' + Date.now() + '.png');
@@ -1515,16 +1376,6 @@ function main() {
   ipcMain.handle('widgets:openMain', (event) => { if (!isTrustedSender(event)) return false; showWin(); return true; });
 
   // -----------------------------------------------------------
-  // 月末安全顺延：目标月份天数不足时钳制到当月最后一天（如 1-31 → 2 月末）
-  function advanceMonthClamped(d) {
-    const day = d.getDate();
-    const last = new Date(d.getFullYear(), d.getMonth() + 2, 0).getDate(); // 目标月的天数
-    d.setDate(1);          // 先回到 1 号，避免 setMonth 造成天数溢出
-    d.setMonth(d.getMonth() + 1);
-    d.setDate(Math.min(day, last));
-    return d;
-  }
-
   // 重复待办逾期自动顺延（设置开启时）
   // -----------------------------------------------------------
   function autoAdvanceOverdue() {
@@ -1542,7 +1393,7 @@ function main() {
           switch (t.repeat) {
             case 'daily': next.setDate(next.getDate() + 1); break;
             case 'weekly': next.setDate(next.getDate() + 7); break;
-            case 'monthly': advanceMonthClamped(next); break;
+            case 'monthly': dateutil.advanceMonthClamped(next); break;
             case 'yearly': next.setFullYear(next.getFullYear() + 1); break;
             default: return; // 未知周期，跳过
           }
@@ -1556,14 +1407,27 @@ function main() {
           changed = true;
         }
       });
-      if (changed) { saveStore(d); broadcastChanged(); }
+      if (changed) saveStore(d);   // store 变更事件会自动广播给渲染层
     } catch (e) { /* ignore */ }
   }
 
   // -----------------------------------------------------------
   // 自动文件整理规则：监控文件夹里的文件按规则移动到目标目录
   // -----------------------------------------------------------
-  const organizeSeen = new Set(); // 已扫描过的文件名，避免对不匹配文件反复尝试
+  // 旧实现用只增不减的 Set 记住「扫描过的文件」，副作用有两个：
+  //   1) 新增/修改规则后，之前扫过的文件永远不会再被整理（除非手动「立即整理」）
+  //   2) 长时间运行内存只增不减
+  // 现在改成「带时间窗的尝试记录」：只抑制短时间内的重复尝试（失败的文件会被重试），
+  // 并且在规则/监控目录变化时立即清空，让新规则对已有文件即时生效。
+  const ORGANIZE_RETRY_MS = 10 * 60 * 1000;   // 同一文件 10 分钟内不重复尝试
+  const ORGANIZE_MAX_TRACKED = 5000;          // 记录上限，防内存膨胀
+  const organizeAttempts = new Map();         // 绝对路径 → 上次尝试时间
+  let organizeConfigSig = null;               // 规则指纹，用于侦测配置变化
+
+  function configSignature(cfg) {
+    const rules = (Array.isArray(cfg.rules) ? cfg.rules : []).map(r => [r.type || 'ext', String(r.value || ''), String(r.to || '')].join('\u0001'));
+    return String(cfg.watch || '') + '\u0002' + rules.join('\u0003');
+  }
 
   function uniqueTargetPath(dest) {
     if (!fs.existsSync(dest)) return dest;
@@ -1575,21 +1439,42 @@ function main() {
     return dest;
   }
 
-  function runAutoOrganize() {
+  function runAutoOrganize(opts) {
+    const force = !!(opts && opts.force);
     try {
       const cfg = (loadStore().settings || {}).autoOrganize || {};
-      if (cfg.enabled !== true) return { moved: [], errors: [] };
+      if (cfg.enabled !== true) return { moved: [], errors: [], scanned: 0, skipped: 0 };
       const watch = String(cfg.watch || '').trim();
-      const rules = (Array.isArray(cfg.rules) ? cfg.rules : []).filter(r => r && r.value && typeof r.to === 'string' && path.isAbsolute(r.to));
-      if (!watch || !fs.existsSync(watch) || !rules.length) return { moved: [], errors: [] };
+      // 规则目标必须是绝对路径：自动整理会真实移动用户文件，
+      // 相对路径会以进程工作目录为基准乱搬，直接忽略这类规则
+      const rules = (Array.isArray(cfg.rules) ? cfg.rules : [])
+        .filter(r => r && typeof r.value === 'string' && r.value && typeof r.to === 'string' && path.isAbsolute(r.to));
+      if (!watch || !fs.existsSync(watch) || !rules.length) return { moved: [], errors: [], scanned: 0, skipped: 0 };
+
+      // 规则或监控目录变化 → 清空尝试记录，让新规则对已有文件即时生效
+      const sig = configSignature(cfg);
+      if (sig !== organizeConfigSig) {
+        if (organizeConfigSig !== null) organizeAttempts.clear();
+        organizeConfigSig = sig;
+      }
+      // 清理过期的尝试记录（同时限制内存占用）
+      const now = Date.now();
+      for (const [p, t] of organizeAttempts) {
+        if (now - t > ORGANIZE_RETRY_MS) organizeAttempts.delete(p);
+      }
+      if (organizeAttempts.size > ORGANIZE_MAX_TRACKED) organizeAttempts.clear();
 
       const moved = [];
+      const skipped = [];
       const errors = [];
+      let scanned = 0;
       const entries = fs.readdirSync(watch, { withFileTypes: true });
       for (const ent of entries) {
         if (ent.isDirectory()) continue; // 只整理文件，不递归
         const src = path.join(watch, ent.name);
-        if (organizeSeen.has(src)) continue;
+        scanned++;
+        const lastTry = organizeAttempts.get(src);
+        if (!force && lastTry && now - lastTry < ORGANIZE_RETRY_MS) { skipped.push(ent.name); continue; }
 
         let targetDir = null;
         const nameL = ent.name.toLowerCase();
@@ -1600,21 +1485,22 @@ function main() {
           if (r.type === 'ext') { if (v === ext) { targetDir = r.to; break; } }
           else { if (nameL.indexOf(v) !== -1) { targetDir = r.to; break; } } // kw 关键词
         }
-        if (!targetDir) { organizeSeen.add(src); continue; }
+        // 不匹配任何规则的文件也记一次尝试（短时间内不重复匹配），但过期后会重新判断
+        organizeAttempts.set(src, now);
+        if (!targetDir) continue;
         try {
           if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
           const dest = uniqueTargetPath(path.join(targetDir, ent.name));
           fs.renameSync(src, dest);
+          organizeAttempts.delete(src);       // 已移动：源路径不再需要记录
           moved.push({ from: src, to: dest });
-          organizeSeen.add(src);   // 成功后记住，避免反复尝试
         } catch (e) {
-          organizeSeen.delete(src); // 失败时移出，下次轮询可重试
           errors.push({ file: ent.name, msg: String((e && e.message) || e) });
         }
       }
-      return { moved, errors };
+      return { moved, errors, scanned, skipped: skipped.length };
     } catch (e) {
-      return { moved: [], errors: [{ msg: String((e && e.message) || e) }] };
+      return { moved: [], errors: [{ msg: String((e && e.message) || e) }], scanned: 0, skipped: 0 };
     }
   }
 
@@ -1687,8 +1573,8 @@ function main() {
         const fireAt = dueMin - remindMin;
         const nowMin = now.getHours() * 60 + now.getMinutes();
         if (nowMin < fireAt) return;              // 还没到提醒时间
-        if (t._remindedToday === tk) return;      // 今天已提醒过
-        t._remindedToday = tk;
+        if (t.remindedOn === tk) return;      // 今天已提醒过（remindedOn 为正式字段，见 lib/migrate.js）
+        t.remindedOn = tk;
         changed = true;
         if (Notification.isSupported()) {
           const n = new Notification({
@@ -1712,7 +1598,7 @@ function main() {
       const s = d.settings || {};
       if (s.dailyRemind !== true) return;
       const tk = dateKeyMain();
-      if (s._dailyRemindDate === tk) return;                 // 今天已汇总过
+      if (s.dailyRemindOn === tk) return;                    // 今天已汇总过
       const hm = String(s.dailyRemindTime || '08:30').trim();
       const parts = hm.split(':').map(Number);
       if (parts.length < 2 || isNaN(parts[0])) return;
@@ -1726,7 +1612,7 @@ function main() {
         const more = today.length > 6 ? '\n… 另有 ' + (today.length - 6) + ' 项' : '';
         new Notification({ title: '今日待办（' + today.length + ' 项）', body: lines + more }).show();
       }
-      s._dailyRemindDate = tk;
+      s.dailyRemindOn = tk;
       saveStore(d);
     } catch (e) {
       /* ignore */
@@ -1748,21 +1634,28 @@ function main() {
   // ---------------------------------------------------------------------------
   ipcMain.handle('store:load', (event) => {
     if (!isTrustedSender(event)) throw new Error('forbidden');
-    const data = loadStore();
-    // 时间统计设置为老用户补默认值（浅合并不会覆盖既有字段）
-    if (!data.settings || typeof data.settings.timeTrack !== 'object' || !Array.isArray(data.settings.timeTrack.rules)) {
-      if (!data.settings) data.settings = defaultData().settings;
-      data.settings.timeTrack = JSON.parse(JSON.stringify(TIME_TRACK_DEFAULTS));
-    }
-    return data;
+    // 结构归一化与老用户补默认值已统一在 lib/migrate.js 处理，这里只回给渲染层
+    return { rev: store.getRev(), data: loadStore() };
   });
 
-  ipcMain.handle('store:save', (event, data) => {
+  // 渲染层落盘通道：只接受「补丁」（差异），不接受整份快照。
+  // 整份覆盖会让主进程的并发写入（快速添加待办、逾期顺延、提醒标记、小组件开关）被丢掉。
+  // 补丁本身先过 lib/patchguard.js 的形状/体积/字段白名单校验。
+  ipcMain.handle('store:commit', (event, payload) => {
     if (!isTrustedSender(event)) throw new Error('forbidden');
-    const ok = saveStore(data);
-    reconcileUsage(); // 时间统计开关等设置可能变化，立即自愈
+    const patch = payload && payload.patch;
+    const bad = validatePatch(patch, {
+      collections: proto.COLLECTIONS,
+      ephemeralKeys: proto.EPHEMERAL_KEYS
+    });
+    if (bad) {
+      try { console.log('[store] 拒绝非法补丁：' + bad); } catch (e) { /* ignore */ }
+      return { ok: false, rev: store.getRev(), changed: false, error: bad };
+    }
+    const r = store.commit(patch);
+    reconcileUsage();   // 时间统计开关等设置可能变化，立即自愈
     reconcileWidgets(); // 桌面小组件开关可能变化
-    return ok;
+    return r;
   });
 
   ipcMain.handle('win:mode', (event, mode) => {
@@ -1873,9 +1766,8 @@ function main() {
   });
 
   ipcMain.handle('auto:run', (event) => {
-    if (!isTrustedSender(event)) return { moved: [], errors: [] };
-    organizeSeen.clear(); // 手动整理：重扫全部
-    return runAutoOrganize();
+    if (!isTrustedSender(event)) return { moved: [], errors: [], scanned: 0, skipped: 0 };
+    return runAutoOrganize({ force: true });   // 手动整理：忽略重试时间窗，重扫全部
   });
 
   ipcMain.handle('notify:show', (event, opts) => {
@@ -1929,6 +1821,20 @@ function main() {
     };
   });
 
+  // 运行环境诊断（设置页展示；也是出问题时的唯一排查入口）
+  ipcMain.handle('app:diagnostics', (event) => {
+    if (!isTrustedSender(event)) throw new Error('forbidden');
+    return appDiagnostics();
+  });
+
+  // 手动重新探测 PowerShell（设置页「重新检测」）
+  ipcMain.handle('app:probePowershell', async (event) => {
+    if (!isTrustedSender(event)) throw new Error('forbidden');
+    await ps.probe(true);
+    reconcileUsage();      // 环境变化后时间统计可能可以从降级恢复
+    return appDiagnostics();
+  });
+
   // ----- 文件/目录选择 -----
   ipcMain.handle('dialog:pickFiles', async (event) => {
     if (!isTrustedSender(event)) return [];
@@ -1980,20 +1886,23 @@ function main() {
 
   // Electron 的 readShortcutLink 对部分 .lnk（如某些安装器生成的快捷方式）会解析失败，
   // 但 PowerShell 的 WScript.Shell 仍可读出目标；用其兜底，否则 getFileIcon 只会拿到通用文档图标
-  function resolveLnkViaPs(p) {
-    return new Promise((resolve) => {
-      try {
-        const cmd = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + String(p).replace(/'/g, "''") + "'); if ($s.TargetPath) { $s.TargetPath }";
-        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + cmd],
-          { windowsHide: true, encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
-            try {
-              if (err || !stdout) return resolve(null);
-              const t = String(stdout).replace(/^\uFEFF/, '').trim();
-              resolve(t && path.isAbsolute(t) && fs.existsSync(t) ? t : null);
-            } catch (e) { resolve(null); }
-          });
-      } catch (e) { resolve(null); }
-    });
+  async function resolveLnkViaPs(p) {
+    if (!ps.isAvailable()) {
+      ps.noteFeature('lnk-resolve', false, 'PowerShell 不可用，无法兜底解析快捷方式目标');
+      return null;
+    }
+    try {
+      const cmd = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + String(p).replace(/'/g, "''") + "'); if ($s.TargetPath) { $s.TargetPath }";
+      const r = await ps.run(ps.scriptArgs('[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + cmd), { timeout: 5000 });
+      if (!r.ok || !r.stdout) { ps.noteFeature('lnk-resolve', false, r.error || '未取到目标路径'); return null; }
+      // 取最后一行有效输出：PowerShell 可能在结果前打印警告/本地化提示
+      const t = lastMeaningfulLine(r.stdout);
+      const ok = !!(t && path.isAbsolute(t) && fs.existsSync(t));
+      ps.noteFeature('lnk-resolve', ok, ok ? '' : '解析结果不是有效路径');
+      return ok ? t : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   // 识别 SHGetFileInfo 失败时的通用占位图：对一个必然不存在的文件采基准图，
@@ -2011,33 +1920,41 @@ function main() {
   }
 
   // SHGetFileInfo 失败时用 GDI+ ExtractAssociatedIcon 兜底（对 PNG 压缩图标等特殊 exe 有效）
-  function extractIconViaPs(p) {
-    return new Promise((resolve) => {
-      try {
-        const outPng = path.join(os.tmpdir(), 'wbench-icon-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.png');
-        const ps = [
-          'try {',
-          '  Add-Type -AssemblyName System.Drawing',
-          "  $ico = [System.Drawing.Icon]::ExtractAssociatedIcon('" + String(p).replace(/'/g, "''") + "')",
-          "  $ico.ToBitmap().Save('" + outPng.replace(/\\/g, '\\\\') + "', [System.Drawing.Imaging.ImageFormat]::Png)",
-          "  Write-Output 'OK'",
-          "} catch { Write-Output 'FAIL' }"
-        ].join('; ');
-        execFile('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true, encoding: 'utf8', timeout: 8000 }, (err) => {
-          try {
-            if (err || !fs.existsSync(outPng)) return resolve(null);
-            const buf = fs.readFileSync(outPng);
-            fs.rmSync(outPng, { force: true });
-            resolve(buf.length > 120 ? 'data:image/png;base64,' + buf.toString('base64') : null);
-          } catch (e) { resolve(null); }
-        });
-      } catch (e) { resolve(null); }
-    });
+  async function extractIconViaPs(p) {
+    if (!ps.isAvailable()) return null;                 // 只是兜底手段，不可用就交给字母头像
+    try {
+      const outPng = path.join(os.tmpdir(), 'wbench-icon-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) + '.png');
+      const script = [
+        'try {',
+        '  Add-Type -AssemblyName System.Drawing',
+        "  $ico = [System.Drawing.Icon]::ExtractAssociatedIcon('" + String(p).replace(/'/g, "''") + "')",
+        "  $ico.ToBitmap().Save('" + outPng.replace(/\\/g, '\\\\') + "', [System.Drawing.Imaging.ImageFormat]::Png)",
+        "  Write-Output 'OK'",
+        "} catch { Write-Output 'FAIL' }"
+      ].join('; ');
+      const r = await ps.run(ps.scriptArgs(script), { timeout: 8000 });
+      if (!r.ok || !fs.existsSync(outPng)) { ps.noteFeature('icon-extract', false, r.error || 'API 提取图标失败'); return null; }
+      const buf = fs.readFileSync(outPng);
+      fs.rmSync(outPng, { force: true });
+      const dataUrl = buf.length > 120 ? 'data:image/png;base64,' + buf.toString('base64') : null;
+      ps.noteFeature('icon-extract', !!dataUrl, dataUrl ? '' : '提取结果为空');
+      return dataUrl;
+    } catch (e) {
+      return null;
+    }
   }
 
   // 多级尝试取文件图标：
   // lnk → 解析目标（readShortcutLink → PowerShell 兜底）→ 常规提取 → 占位图检测 → GDI+ 兜底。
   // 「lnk 自身的图标」永远是通用占位图，绝不作为有效结果返回（失败返回 null，渲染层显示字母头像）。
+  // 结果统一走图标缓存：返回 file:// URL（短），数据文件里只存 `icon:<sha1>.png` 引用。
+  function cacheIconImage(dataUrl) {
+    if (!dataUrl) return null;
+    const saved = iconCache.store(dataUrl);
+    if (saved) return saved.url;          // 常规路径：落盘成 PNG，返回 file:// URL
+    return dataUrl;                       // 落盘失败（如目录只读）：退回内联 data URL，功能不中断
+  }
+
   async function fetchFileIcon(p) {
     try {
       const isLnk = path.extname(p).toLowerCase() === '.lnk';
@@ -2062,14 +1979,14 @@ function main() {
         const img = await app.getFileIcon(source, { size: 'large' });
         if (img && !img.isEmpty()) {
           const durl = img.toDataURL();
-          if (durl !== generic) return durl;   // 真图标
+          if (durl !== generic) return cacheIconImage(durl);   // 真图标
         }
       } catch (e) { /* ignore */ }
       // 目标解析失败的 lnk：任何图标都只会是通用占位图 → 返回 null（渲染层字母头像）
       if (isLnk && !resolved) return null;
       // 第二级：GDI+ ExtractAssociatedIcon（对 PNG 压缩图标等特殊 exe 图标资源有效）
       const viaPs = await extractIconViaPs(source);
-      if (viaPs) return viaPs;
+      if (viaPs) return cacheIconImage(viaPs);
     } catch (e) { /* ignore */ }
     return null;
   }
@@ -2179,7 +2096,7 @@ function main() {
     if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true, content: null };
     try {
       const content = fs.readFileSync(r.filePaths[0], 'utf8');
-      JSON.parse(content); // 校验合法性
+      JSON.parse(content); // 只校验合法性；结构清洗在渲染层（renderer/importguard.js）
       return { ok: true, canceled: false, content };
     } catch (e) {
       logE('data:import', e);
@@ -2193,8 +2110,12 @@ function main() {
   });
 
   app.whenReady().then(() => {
+    // 先装载数据（必要时从备份自愈、执行结构迁移并清理图标缓存），再建窗口 ——
+    // 这样窗口首次读取设置时数据已就绪，恢复提示也能先于界面出现
+    loadStoreWithRecovery();
+    pruneIconCache();
+
     app.setAppUserModelId('com.workbench.desktop');
-    autoRestore(); // 先于窗口/渲染进程就绪时尝试恢复损坏主数据，确保本次启动即显示恢复结果
     createWindow();
     buildTray();
     registerHotkey();
@@ -2223,6 +2144,9 @@ function main() {
     screen.on('display-metrics-changed', handleDisplayChange);
     screen.on('display-added', handleDisplayChange);
     screen.on('display-removed', handleDisplayChange);
+
+    // PowerShell 能力探测：异步进行，不阻塞启动；探测结果变化会推送给界面
+    ps.probe().then(() => { try { reconcileUsage(); } catch (e) { /* ignore */ } }).catch(() => { /* ignore */ });
 
     // 待办到期提醒 + 每日汇总 + 逾期顺延 + 自动整理：启动后每 30 秒检查一次
     setInterval(() => { checkReminders(); checkDailySummary(); autoAdvanceOverdue(); runAutoOrganize(); }, 30 * 1000);
@@ -2254,6 +2178,7 @@ function main() {
     try { if (usageHelper) usageHelper.kill(); } catch (e) { /* ignore */ }
     usageHelper = null;
     try { saveUsageData(); } catch (e) { /* ignore */ } // 退出前落盘时间统计增量
+    try { store.flush(); } catch (e) { /* ignore */ }   // 退出前把写合并窗口里的主数据落盘
     try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }
   });
 

@@ -1,12 +1,11 @@
 (function () {
-  const api = window.api;
-  if (!api) return;
   const inp = document.getElementById('qaInput');
   if (!inp) return;
 
   // 跟随应用主题，避免深色模式下小窗仍显示浅色样式
   try {
-    api.load().then((st) => {
+    api.load().then((r) => {
+      const st = (r && r.data) ? r.data : r;
       const th = (st && st.settings && st.settings.theme) || 'light';
       const dark = th === 'dark' || (th === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
       document.documentElement.classList.toggle('dark', dark);

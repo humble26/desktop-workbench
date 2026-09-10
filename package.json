@@ -1,7 +1,7 @@
 {
   "name": "desktop-workbench",
   "productName": "桌面工作台",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "PC 桌面级个人工作台：桌面覆盖层 + 文件整理 + 快捷入口 + 待办/便签/打卡 + 剪贴板历史",
   "main": "main.js",
   "author": "Workbench",
@@ -12,9 +12,10 @@
   "scripts": {
     "start": "electron .",
     "icon": "node scripts/make-icon.js",
-    "dist": "electron-builder --win",
-    "check": "node --check main.js && node --check preload.js && node --check renderer/app.js && node --check renderer/clipboard.js && node --check renderer/quickadd.js && node --check renderer/shot.js && node --check renderer/widget.js",
-    "test": "npm run check"
+    "check": "node tools/check-syntax.js",
+    "test": "node --test --test-isolation=none test/storeproto.test.js test/migrate.test.js test/store.test.js test/security.test.js test/powershell.test.js test/quickadd.test.js test/usage.test.js test/iconcache.test.js test/patchguard.test.js test/ported-features.test.js test/styles.test.js test/contract.test.js test/main-assembly.test.js",
+    "test:smoke": "electron tools/smoke/renderer-smoke.js",
+    "dist": "electron-builder --win"
   },
   "devDependencies": {
     "electron": "^31.7.7",
@@ -32,6 +33,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "lib/**/*",
       "renderer/**/*",
       "ocr-data/**",
       "build/icon.png"

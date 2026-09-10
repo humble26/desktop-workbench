@@ -22,9 +22,10 @@
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
   }
 
-  // 跟随应用主题
+  // 跟随应用主题（主进程 load 返回 { rev, data }）
   try {
-    api.load().then((st) => {
+    api.load().then((r) => {
+      const st = (r && r.data) ? r.data : r;
       const th = (st && st.settings && st.settings.theme) || 'light';
       const dark = th === 'dark' || (th === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
       document.documentElement.classList.toggle('dark', dark);

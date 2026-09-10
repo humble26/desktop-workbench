@@ -20,8 +20,9 @@
   $('#wgClose').onclick = () => api.widgetsClose(type);
   $('#wgOpen').onclick = () => api.widgetsOpenMain();
 
-  // 跟随应用主题
-  api.load().then((st) => {
+  // 跟随应用主题（主进程 load 返回 { rev, data }）
+  api.load().then((r) => {
+    const st = (r && r.data) ? r.data : r;
     const th = (st && st.settings && st.settings.theme) || 'light';
     const dark = th === 'dark' || (th === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.classList.toggle('dark', dark);
@@ -42,7 +43,7 @@
   async function renderFromStore() {
     if (document.hidden) return; // 组件隐藏时跳过无谓轮询
     let st = null;
-    try { st = await api.load(); } catch (e) { return; }
+    try { const r = await api.load(); st = (r && r.data) ? r.data : r; } catch (e) { return; }
     if (!st) return;
     if (type === 'todos') {
       const tk = dateKey();

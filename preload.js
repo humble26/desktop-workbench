@@ -4,8 +4,9 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // 白名单化的安全 API：渲染进程无法直接访问 Node / 文件系统 / shell
 contextBridge.exposeInMainWorld('api', {
+  // 数据读写：load 返回 { rev, data }；commit 只提交「补丁」，由主进程独占落盘
   load: () => ipcRenderer.invoke('store:load'),
-  save: (data) => ipcRenderer.invoke('store:save', data),
+  commit: (payload) => ipcRenderer.invoke('store:commit', payload),
 
   pickFiles: () => ipcRenderer.invoke('dialog:pickFiles'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
@@ -34,6 +35,9 @@ contextBridge.exposeInMainWorld('api', {
   hideWindow: () => ipcRenderer.invoke('win:hide'),
   quit: () => ipcRenderer.invoke('win:quit'),
   appInfo: () => ipcRenderer.invoke('app:info'),
+  diagnostics: () => ipcRenderer.invoke('app:diagnostics'),
+  probePowershell: () => ipcRenderer.invoke('app:probePowershell'),
+  onDiagnostics: (cb) => ipcRenderer.on('app:diagnostics', (_e, d) => cb(d)),
 
   backupNow: () => ipcRenderer.invoke('data:backupNow'),
   listBackups: () => ipcRenderer.invoke('data:listBackups'),
