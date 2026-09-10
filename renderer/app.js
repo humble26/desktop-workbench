@@ -9,11 +9,24 @@
 // 启动
 // ---------------------------------------------------------------
 async function boot() {
-  if (!api) { document.body.innerHTML = '<div style="padding:40px;font-family:monospace">preload 未加载</div>'; return; }
-  if (!proto) { document.body.innerHTML = '<div style="padding:40px;font-family:monospace">storeproto.js 未加载：数据协议缺失，已停止启动（改动不会被保存）</div>'; return; }
-  const loaded = await api.load();
-  state = (loaded && loaded.data) ? loaded.data : loaded;   // 主进程返回 { rev, data }
-  baseRev = (loaded && loaded.rev) || 0;
+  if (!api) { showFatalError('preload 未加载', '窗口未能注入 preload.js，因此拿不到数据与系统能力接口。\n请确认安装完整（重装一次通常可解决）。'); return; }
+  if (!proto) { showFatalError('storeproto.js 未加载', '数据协议脚本缺失，已停止启动（继续运行会丢失改动）。\n请确认安装完整（重装一次通常可解决）。'); return; }
+  let loaded = null;
+  try {
+    loaded = await api.load();
+  } catch (e) {
+    // 关键：请求数据失败时必须**看得见**，不能像 v1.8.2 那样整屏空白
+    showFatalError('读取本地数据失败', '主进程拒绝了这次请求或读取过程出错：\n\n' +
+      ((e && (e.stack || e.message)) || String(e)) +
+      '\n\n可能原因：安装不完整、主进程启动异常、或权限问题。\n数据文件未被修改，可安全地重试或重装。');
+    return;
+  }
+  if (!loaded || (!loaded.data && !loaded.todos)) {
+    showFatalError('读取本地数据失败', '主进程返回的数据为空或格式不正确：\n\n' + JSON.stringify(loaded).slice(0, 400));
+    return;
+  }
+  state = loaded.data ? loaded.data : loaded;   // 主进程返回 { rev, data }
+  baseRev = loaded.rev || 0;
   // 结构与老数据归一化统一由主进程 lib/migrate.js 负责，这里只补界面状态
   state.profile = Object.assign({ name: '我的工作台' }, state.profile || {});
   state.settings = Object.assign({ accent: '#2f2e2b', theme: 'light', layout: 'overlay', mode: 'normal' }, state.settings || {});
@@ -26,11 +39,18 @@ async function boot() {
   (state.shortcuts || []).forEach(s => {
     if (s.icon && (s.icon.length < 2500 || /^data:/i.test(s.icon))) s.icon = null;
   });
-  serverSnap = proto.snapshot(state);   // 建立差分基线（不含界面状态）
-  applyAccent();
-  syncLayout();
-  initWinControls();
-  render();
+  try {
+    serverSnap = proto.snapshot(state);   // 建立差分基线（不含界面状态）
+    applyAccent();
+    syncLayout();
+    initWinControls();
+    render();
+    appRendered = true;                   // 之后的偶发错误降级为 toast，不再弹面板
+  } catch (e) {
+    showFatalError('界面渲染失败', ((e && (e.stack || e.message)) || String(e)) +
+      '\n\n数据文件未被修改。可按「重试」，若反复出现请把上面的文字反馈给我。');
+    return;
+  }
   // 番茄钟计时刷新：无论停在哪个页面都持续走表，回到番茄钟页时时间保持正确
   setInterval(() => { try { pomoTick(); } catch (e) { /* ignore */ } }, 500);
   try { const info = await api.appInfo(); const v = $('#ver'); if (v && info.version) v.textContent = 'v' + info.version; } catch (e) { /* ignore */ }

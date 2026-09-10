@@ -442,7 +442,12 @@ function main() {
         items: (clipData.items || []).length
       },
       hotkeys: hotkeyStatus(),
-      icons: (function () { try { return iconCache.stats(); } catch (e) { return { files: 0, bytes: 0 }; } })()
+      icons: (function () { try { return iconCache.stats(); } catch (e) { return { files: 0, bytes: 0 }; } })(),
+      // 最近一次被拒绝的 IPC 来源：过去这类拒绝是完全静默的，
+      // 一旦校验过严（曾导致界面全空白）根本无从排查
+      ipc: (function () {
+        try { return { lastRejection: typeof isTrustedSender.lastRejection === 'function' ? isTrustedSender.lastRejection() : null }; } catch (e) { return { lastRejection: null }; }
+      })()
     };
   }
 

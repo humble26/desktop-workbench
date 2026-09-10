@@ -264,3 +264,68 @@ test('IPC 来源校验：非本应用页面被拒绝', async () => {
   http.sender.mainFrame = http.senderFrame;
   assert.throws(() => load(http), /forbidden/);
 });
+
+/* ---------------------------------------------------------------------------
+   打包环境模拟：把应用放进名为 app.asar 的目录里再 require 主进程。
+   这是 v1.8.2「界面空白」的针对性防线 —— 当时的成因是 IPC 来源校验里
+   依赖了 `senderFrame === sender.mainFrame` 这一 Electron 内部实现细节，
+   在打包环境下两者是不同实例，于是所有 IPC 被拒、渲染层拿不到数据、启动中断。
+   这里用「不同实例 + asar 路径 + 中文安装目录」的 event 形态调用真实 handler，
+   要求它正常返回数据。
+   --------------------------------------------------------------------------- */
+test('打包环境（app.asar + 中文路径 + 框架实例不同）下 IPC 必须可用', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-asar-'));
+  const asarDir = path.join(root, '安装目录 测试', 'resources', 'app.asar');
+  fs.mkdirSync(asarDir, { recursive: true });
+  // 只复制运行期需要的部分（不复制 node_modules / test / tools / dist）
+  for (const f of ['main.js', 'preload.js', 'package.json']) {
+    fs.copyFileSync(path.join(ROOT, f), path.join(asarDir, f));
+  }
+  for (const d of ['lib', 'renderer']) {
+    const from = path.join(ROOT, d);
+    const to = path.join(asarDir, d);
+    fs.mkdirSync(to, { recursive: true });
+    for (const f of fs.readdirSync(from)) {
+      const s = path.join(from, f);
+      if (fs.statSync(s).isFile()) fs.copyFileSync(s, path.join(to, f));
+    }
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-asar-user-'));
+  const stub = makeElectronStub(tmpDir);
+  const mainPath = path.join(asarDir, 'main.js');
+  delete require.cache[require.resolve(mainPath)];
+  assert.doesNotThrow(() => withElectronStub(stub, () => require(mainPath)), '打包路径下 require(main.js) 不应失败');
+  await new Promise(r => setTimeout(r, 200));
+
+  const { handlers } = stub.__internals;
+  const load = handlers.get('store:load');
+  assert.ok(load, '主进程应注册 store:load');
+
+  const pageUrl = require('node:url').pathToFileURL(path.join(asarDir, 'renderer', 'index.html')).href;
+  // 关键：senderFrame 与 sender.mainFrame 是不同对象（Electron 不保证同一性）
+  const senderFrame = { url: pageUrl, parent: null, detached: false };
+  const mainFrame = { url: pageUrl, parent: null, detached: false };
+  const ev = {
+    senderFrame: senderFrame,
+    sender: { mainFrame: mainFrame, getURL: () => pageUrl }
+  };
+  assert.notStrictEqual(senderFrame, mainFrame, '前提：两者不同对象');
+
+  let out = null;
+  assert.doesNotThrow(() => { out = load(ev); }, '打包环境下 store:load 不应抛 forbidden');
+  assert.ok(out && out.data, '应返回 { rev, data }');
+  assert.strictEqual(typeof out.rev, 'number');
+  assert.deepStrictEqual(out.data.todos, []);
+
+  // 同时验证写回通道在打包路径下也可用
+  const commit = handlers.get('store:commit');
+  const r = commit(ev, { patch: { collections: { todos: { order: ['t1'], upsert: [{ id: 't1', text: '打包环境测试' }], remove: [] } } } });
+  assert.strictEqual(r.ok, true, '打包环境下 store:commit 应可用');
+  assert.strictEqual(out && null, null);
+});
+
+test('打包环境：renderer/app.js 必须带启动入口调用', () => {
+  const appJs = fs.readFileSync(path.join(ROOT, 'renderer', 'app.js'), 'utf8');
+  assert.match(appJs, /^\s*boot\(\);\s*$/m, 'app.js 缺少 boot(); 入口调用，页面将不会启动');
+});

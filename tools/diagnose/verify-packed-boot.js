@@ -68,6 +68,32 @@ for (const f of ['lib/store.js', 'lib/migrate.js', 'lib/sensitive.js', 'renderer
   if (!ok) failed++;
 }
 
+// 4) 打包后的 IPC 来源校验必须是「不依赖 Electron 对象同一性」的修复版
+//    （v1.8.2 / v1.8.3 界面空白的根因就是这里用了 senderFrame !== sender.mainFrame）
+function stripComments(code) {
+  // 只做代码判定，避免把「解释这个 bug 的注释」当成 bug 本身
+  return String(code)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+}
+const sec = find(index, '', 'lib/security.js');
+if (!sec) { console.error('✖ asar 中缺少 lib/security.js'); failed++; }
+else {
+  const buf = Buffer.alloc(sec.size);
+  fs.readSync(fd, buf, 0, sec.size, baseOffset + parseInt(sec.offset, 10));
+  const raw = buf.toString('utf8');
+  const code = stripComments(raw);
+  const identity = [
+    /senderFrame\s*!==\s*\w+\.sender\.mainFrame/,
+    /frame\s*!==\s*\w+\.sender\.mainFrame/,
+    /senderFrame\s*===\s*\w+\.sender\.mainFrame/
+  ].find(re => re.test(code));
+  const hasGetUrlFallback = /\.getURL\s*\(/.test(code);
+  console.log((identity ? '✖   ' : 'OK  ') + '来源校验未依赖 senderFrame/sender.mainFrame 的对象同一性' + (identity ? '（命中 ' + identity + '）' : ''));
+  console.log((hasGetUrlFallback ? 'OK  ' : '✖   ') + '来源校验含 WebContents.getURL() 回退');
+  if (identity || !hasGetUrlFallback) failed++;
+}
+
 fs.closeSync(fd);
 console.log('\n' + (failed ? '校验失败（' + failed + ' 项）' : '打包产物校验通过：页面具备启动能力'));
 process.exit(failed ? 1 : 0);

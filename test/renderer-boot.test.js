@@ -84,6 +84,43 @@ test('11 个视图逐个渲染都不抛异常', async () => {
   }
 });
 
+test('数据读取失败时，界面必须给出可见提示而不是空白（v1.8.2 空白事故的防线）', async () => {
+  const h = createRendererHarness({
+    apiOverrides: {
+      load: () => Promise.reject(new Error('forbidden'))
+    }
+  });
+  try {
+    const r = await h.boot(300);
+
+    // boot() 会「正常结束」（错误已被捕获处理），但页面上必须出现错误面板
+    const panels = r.bodyChildren.filter(html => html.indexOf('读取本地数据失败') !== -1);
+    assert.strictEqual(panels.length > 0, true,
+      '数据读取失败时没有显示任何提示（这就是空白界面的成因）。body 子元素：' + JSON.stringify(r.bodyChildren).slice(0, 200));
+    assert.ok(panels[0].indexOf('forbidden') !== -1, '错误面板应包含具体原因');
+    assert.ok(panels[0].indexOf('重试') !== -1, '错误面板应提供重试入口');
+    // 关键点：失败时页面上必须留有可见内容（而不是像 v1.8.2 那样什么都没有）
+    assert.ok(r.bodyChildren.length > 0, '失败时页面上必须留下可见提示');
+  } finally {
+    h.dispose();
+  }
+});
+
+test('主进程返回异常结构时也给出可见提示', async () => {
+  const h = createRendererHarness({
+    apiOverrides: {
+      load: () => Promise.resolve({ rev: 0, data: null })
+    }
+  });
+  try {
+    const r = await h.boot(300);
+    const panels = r.bodyChildren.filter(html => html.indexOf('读取本地数据失败') !== -1);
+    assert.strictEqual(panels.length > 0, true, '异常数据结构应触发可见提示');
+  } finally {
+    h.dispose();
+  }
+});
+
 test('带数据时视图仍能渲染（待办/便签/打卡/日历/分组都有内容）', async () => {
   const h = createRendererHarness({
     seed: () => ({

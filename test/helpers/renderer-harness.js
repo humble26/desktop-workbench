@@ -149,6 +149,8 @@ function createRendererHarness(opts) {
     onShotInit: () => {}, onShotResult: () => {}
   };
   const api = new Proxy(apiBase, { get(t, k) { return (k in t) ? t[k] : noop; }, has() { return true; } });
+  // 允许测试覆盖个别 api 方法（例如让 load() 失败，验证界面会给出可见提示而不是空白）
+  if (options.apiOverrides) Object.assign(apiBase, options.apiOverrides);
 
   const sandbox = {};
   vm.createContext(sandbox);
@@ -169,6 +171,9 @@ function createRendererHarness(opts) {
     clearTimeout: (h) => { clearTimeout(h); timers.delete(h); },
     clearInterval: (h) => { clearInterval(h); timers.delete(h); },
     queueMicrotask,
+    addEventListener: (type) => { record.logs.push(['window.addEventListener', String(type)]); },
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
     api: api,
     console: {
       log: (...a) => record.logs.push(['log', a.join(' ')]),
@@ -233,6 +238,9 @@ function createRendererHarness(opts) {
       viewHtml: (viewEl && viewEl._htmlSet) ? viewEl.innerHTML : null,
       listeners: record.listeners,
       storeRev: store.getRev(),
+      // 追加到 body 上的内容（用于断言「失败时显示了可见的错误面板」）
+      bodyChildren: body.children.map(c => c.innerHTML || ''),
+      bodyHtml: body.innerHTML || '',
       store: store,
       evalIn: evalIn,
       dispose: dispose

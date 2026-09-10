@@ -152,6 +152,66 @@ document.addEventListener('mousedown', e => { if (ctxEl && !ctxEl.contains(e.tar
 document.addEventListener('contextmenu', e => { e.preventDefault(); });
 
 // ---------------------------------------------------------------
+// 致命错误面板
+// ---------------------------------------------------------------
+// 由来：v1.8.2 启动失败时是**整屏空白**，用户拿不到任何信息，只能反馈「没有内容」。
+// 现在任何启动期错误都会在页面上显示出来（含错误详情、重试、复制），
+// 已经正常渲染之后的偶发错误则降级成 toast，不打扰使用。
+let appRendered = false;
+let fatalShown = false;
+
+function showFatalError(title, detail) {
+  try {
+    if (fatalShown) return;
+    fatalShown = true;
+    const text = String(title || '出错了') + '\n\n' + String(detail || '（无详细信息）');
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(20,22,28,.72);padding:24px';
+    box.innerHTML =
+      '<div style="max-width:760px;width:100%;background:var(--surface-card,#fff);border-radius:var(--radius-card,18px);padding:24px 26px;box-shadow:var(--shadow-overlay);font-family:var(--font);color:var(--text,#1b1e26)">' +
+        '<div style="font-size:16px;font-weight:800;margin-bottom:10px">' + esc(title || '出错了') + '</div>' +
+        '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:42vh;overflow:auto;background:var(--surface-nested,#f3f4f7);border-radius:10px;padding:12px 14px;color:var(--text-secondary,#6b7280)">' + esc(detail || '（无详细信息）') + '</div>' +
+        '<div style="display:flex;gap:10px;margin-top:16px">' +
+          '<button id="fatalRetry" style="border:none;border-radius:9px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;background:var(--accent,#262a33);color:var(--on-accent,#fff)">重试</button>' +
+          '<button id="fatalCopy" style="border:1px solid var(--border,#e8eaee);border-radius:9px;padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;background:transparent;color:var(--text,#1b1e26)">复制详情</button>' +
+        '</div>' +
+        '<div style="margin-top:12px;font-size:12px;color:var(--text-tertiary,#9aa1ac)">反复出现时请把上面的文字反馈给我。此提示不会修改你的数据。</div>' +
+      '</div>';
+    document.body.appendChild(box);
+    const retry = document.getElementById('fatalRetry');
+    if (retry) retry.onclick = () => { try { location.reload(); } catch (e) { /* ignore */ } };
+    const copy = document.getElementById('fatalCopy');
+    if (copy) copy.onclick = () => {
+      try {
+        navigator.clipboard.writeText(text).then(() => { copy.textContent = '已复制'; }, () => { copy.textContent = '复制失败'; });
+      } catch (e) { copy.textContent = '复制失败'; }
+    };
+  } catch (e) {
+    // 连面板都建不出来时，至少把信息写进页面
+    try { document.body.innerHTML = '<pre style="padding:24px;white-space:pre-wrap">' + esc(title + '\n' + detail) + '</pre>'; } catch (e2) { /* ignore */ }
+  }
+}
+
+// 启动期（尚未渲染出内容）的任何错误都要可见；已渲染后的偶发错误只提示
+function reportError(title, detail) {
+  try {
+    if (!appRendered) showFatalError(title, detail);
+    else { try { console.error(title, detail); } catch (e) { /* ignore */ } if (typeof toast === 'function') toast(title); }
+  } catch (e) { /* ignore */ }
+}
+
+window.addEventListener('error', (e) => {
+  const where = (e && e.filename ? e.filename.split(/[\\/]/).pop() + ':' + e.lineno : '未知位置');
+  const msg = (e && e.error && e.error.stack) ? e.error.stack : ((e && e.message) || String(e));
+  reportError('页面脚本出错（' + where + '）', msg);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e && e.reason;
+  const msg = (reason && reason.stack) ? reason.stack : String(reason);
+  reportError('启动过程中出现未处理的错误', msg);
+});
+
+// ---------------------------------------------------------------
 // 文件图标（缓存）与字母头像兜底
 // ---------------------------------------------------------------
 async function fileIcon(p, type) {
