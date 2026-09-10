@@ -45,7 +45,9 @@ const MAP = [
   { file: 'search.js', from: 1587, to: 1746, title: '全局搜索与命令面板' },
   { file: 'actions.js', from: 1747, to: 2158, title: '事件委托（控制器）：所有 data-act 动作分发' },
   { file: 'guide.js', from: 2159, to: 2207, title: '首次使用引导与危险操作确认' },
-  { file: 'app.js', from: 2208, to: 2271, title: '启动' }
+  // 注：2273 行的 `boot();` 是启动入口调用（可执行语句，不是包装行），
+  // 必须包含在区间内 —— v1.8.2 曾因把它当成包装行丢掉而导致界面全空白。
+  { file: 'app.js', from: 2208, to: 2273, title: '启动' }
 ];
 
 // 加载顺序（index.html 用）
@@ -55,16 +57,32 @@ function build() {
   const src = fs.readFileSync(SRC, 'utf8').split('\n');
   const total = src.length;
 
-  // 覆盖校验：区间必须连续、不重叠、恰好覆盖 4..2271（1-3 行是包装头，2272-2274 是包装尾）
+  // 覆盖校验：区间必须连续、不重叠，并且**除了已知的包装行之外不允许有任何未覆盖行**。
+  // 这里刻意不做「总数相减」这类推断 —— 之前正是靠一个偏一位的减法断言，
+  // 把末尾的 `boot();` 入口调用当成包装行静默丢掉了，导致发布出去的版本界面全空白。
+  // 现在改为逐行核对：任何未覆盖的行都会被打印出来并阻止写入。
   const ranges = MAP.map(m => ({ file: m.file.replace(/\+$/, ''), from: m.from, to: m.to, title: m.title }));
   let expect = 4;
   const problems = [];
+  const covered = new Set();
   for (const r of ranges) {
     if (r.from !== expect) problems.push(`区间不连续：${r.file} 期望从 ${expect} 开始，实际 ${r.from}`);
     if (r.to < r.from) problems.push(`区间非法：${r.file} ${r.from}-${r.to}`);
+    for (let i = r.from; i <= r.to; i++) covered.add(i);
     expect = r.to + 1;
   }
-  if (expect !== total - 2) problems.push(`覆盖不足/超出：结束于 ${expect - 1}，应为 ${total - 3}（共 ${total} 行）`);
+  const uncovered = [];
+  for (let i = 1; i <= total; i++) if (!covered.has(i)) uncovered.push(i);
+  const wrapperOk = uncovered.filter(i => {
+    const line = src[i - 1];
+    if (i <= 3) return true;                        // 文件头：'use strict'; / 空行 / (function () {
+    return /^\s*\}\)\(\);\s*$/.test(line);          // 文件尾：仅 IIFE 收尾那一行
+  });
+  const suspicious = uncovered.filter(i => wrapperOk.indexOf(i) === -1);
+  if (suspicious.length) {
+    problems.push('以下源码行未被任何区间覆盖（很可能是可执行语句被当成包装行漏掉）：');
+    for (const i of suspicious) problems.push('  第 ' + i + ' 行: ' + String(src[i - 1]).trim().slice(0, 100));
+  }
   if (problems.length) return { ok: false, problems };
 
   // 合并同一目标文件的多个区间

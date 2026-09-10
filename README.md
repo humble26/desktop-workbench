@@ -2,7 +2,9 @@
 
 一个集成 **待办 / 便签 / 打卡 / 番茄钟 / 剪贴板历史 / 截图 OCR / 时间统计 / 文件自动整理 / 桌面小组件** 的 Windows 桌面效率应用。基于 Electron，界面简约，**数据全部本地存储、不联网**。
 
-> 当前版本：**v1.8.2** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
+> 当前版本：**v1.8.3** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
+
+> ⚠️ 如果你装的是 **v1.8.2**，请升级到 **v1.8.3**：v1.8.2 因打包时丢失了页面启动调用，安装后界面会完全空白（功能本身无问题，仅那一行入口调用缺失）。
 
 ---
 
@@ -104,14 +106,14 @@ desktop-workbench/
 npm install            # 安装依赖（node_modules 不进入版本库）
 npm start              # 本地运行
 
-npm test               # 119 项回归测试：协议/迁移/仓库/安全/解析/统计/缓存/样式/契约/主进程装配
+npm test               # 123 项回归测试：协议/迁移/仓库/安全/解析/统计/缓存/样式/契约/装配/**渲染层启动**
 npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏）
 npm run check          # 语法检查（遍历所有 JS）
 npm run dist           # 生成 Windows 安装包（产物在 dist\）
 ```
 
-- `npm test` 不需要图形环境，可直接在 CI 里跑。
-- `test:smoke` 会启动真实 Electron `BrowserWindow`（`show: false`，使用独立临时 userData，不影响正在运行的实例），验证页面能否启动、渲染层改动是否真的落盘、以及并发写入是否会被覆盖；**需要桌面会话**。
+- `npm test` 不需要图形环境，可直接在 CI 里跑。其中 **`test/renderer-boot.test.js` 会在无浏览器环境下按 `index.html` 的顺序把 23 个渲染脚本加载进共享作用域，断言 `boot()` 能自行完成、11 个视图都能渲染、且数据确实进入视图** —— 这条覆盖是 v1.8.2「界面空白」事故之后补上的（此前没有任何测试检查页面能否启动）。
+- `test:smoke` 会启动真实 Electron `BrowserWindow`（`show: false`，使用独立临时 userData，不影响正在运行的实例），验证 CSP 放行、渲染层改动是否真的落盘、以及并发写入是否会被覆盖；**需要桌面会话**。
 - 依赖安全审计：`source\.npmrc` 使用了镜像源（不提供 audit 端点），请指定官方源：
 
 ```bash
@@ -141,6 +143,11 @@ npm audit --registry=https://registry.npmjs.org
 ## 📜 更新日志
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+### v1.8.3
+- **紧急修复**：v1.8.2 打包时丢失了页面启动调用（`boot();`），安装后界面完全空白；本版补回该行
+- 新增渲染层启动测试（无浏览器环境加载 23 个脚本并断言启动与 11 个视图渲染），已纳入 `npm test`（123 项）
+- 拆分工具的覆盖校验改为逐行核对，杜绝「可执行语句被当成包装行丢掉」
 
 ### v1.8.2
 - **修复数据丢失隐患**：主数据改为「单一写者 + 差异补丁提交」，渲染层不再整份覆盖（此前会覆盖掉主进程同时写入的快速待办 / 逾期顺延 / 提醒标记 / 小组件开关）
