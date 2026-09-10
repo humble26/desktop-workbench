@@ -4,3 +4,9 @@ dist-new/
 ocr-data/
 *.log
 .DS_Store
+
+# 诊断/测试产生的临时文件（不应进入版本库）
+probe-result.json
+probe-api-descriptor.json
+probe-api.html
+smoke-report.txt

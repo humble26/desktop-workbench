@@ -2,9 +2,11 @@
 
 一个集成 **待办 / 便签 / 打卡 / 番茄钟 / 剪贴板历史 / 截图 OCR / 时间统计 / 文件自动整理 / 桌面小组件** 的 Windows 桌面效率应用。基于 Electron，界面简约，**数据全部本地存储、不联网**。
 
-> 当前版本：**v1.8.5** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
+> 当前版本：**v1.8.6** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
 
-> ⚠️ 如果你装的是 **v1.8.2 / v1.8.3 / v1.8.4**：这些版本的安装包启动后界面可能是空白的（原因见更新日志），请直接改用 **v1.8.5**。用户数据不受影响，覆盖安装即可；**升级前请先在系统托盘右键「退出」旧实例** —— 应用关闭窗口只是最小化到托盘，旧实例不退出会让新版本看起来毫无变化。
+> ⚠️ **如果你装的是 v1.8.2 / v1.8.3 / v1.8.4 / v1.8.5：请直接改用 v1.8.6。**
+> 这些版本启动后界面是空白的（侧栏品牌可见，但导航、首页、窗口按钮全空）。根因是 `renderer/core.js` 顶层的 `const api = window.api;` —— preload 通过 `contextBridge` 暴露的 `window.api` 是**不可配置**属性，脚本顶层的 `const` 与它同名会直接抛 `SyntaxError`，导致整个 `core.js` 及其后所有脚本失效；该问题自 v1.8.2 把 `app.js` 拆成多脚本时引入。详见 [更新日志](CHANGELOG.md)。
+> 用户数据不受影响，覆盖安装即可；**升级前请先在系统托盘右键「退出」旧实例**（关闭窗口只是最小化到托盘）。
 
 ---
 
@@ -81,12 +83,13 @@ desktop-workbench/
 │   ├── storeproto.js       #   数据补丁协议（主进程与渲染层共用，UMD）
 │   ├── dateutil.js         #   日期工具（含月末安全顺延，UMD）
 │   ├── importguard.js      #   导入数据守卫（UMD）
+│   ├── errortrap.js        #   错误兜底（最先加载，不依赖任何脚本）
 │   ├── core.js icons.js shell.js app.js
 │   ├── view-*.js           #   11 个视图：首页/快捷入口/文件整理/待办/日历/便签/打卡/番茄钟/数据洞察/时间统计/设置
 │   ├── dialogs.js search.js diagnostics.js actions.js guide.js
 │   ├── style.css           #   设计令牌 + 深色主题（同一套令牌给两套值）
 │   └── clipboard.* quickadd.* shot.* widget.*   # 四个独立小窗
-├── test/                   # 139 项回归测试（node:test，无需 Electron）
+├── test/                   # 141 项回归测试（node:test，无需 Electron）
 ├── tools/                  # 开发工具：语法检查、诊断、拆分与打包校验
 ├── ocr-data/               # 离线 OCR 语言模型（chi_sim + eng）
 ├── build/                  # 应用图标
@@ -98,6 +101,8 @@ desktop-workbench/
 - **单一写者**：`workbench-data.json` 只由主进程通过 `lib/store.js` 写入。渲染层不提交整份快照，而是提交「相对上次已知服务端状态的**差异补丁**」，因此主进程的并发写入（全局快速添加待办、逾期顺延、到期提醒标记、小组件开关）不会被渲染层覆盖。
 - **界面状态不落盘**：当前页面、日历选择、待办筛选、番茄钟计时等只存在于内存（清单见 `storeproto.js` 的 `EPHEMERAL_KEYS`）。
 - **渲染层在同一页面作用域内跨文件共享顶层声明**（无打包器）：`index.html` 里的 `<script>` 顺序即依赖顺序，新增顶层声明不得重名 —— 由 `test/contract.test.js` 守住。
+- ⚠️ **顶层声明不得与 preload 注入的全局同名**：`contextBridge.exposeInMainWorld('api', …)` 暴露的是**不可配置**属性，脚本顶层的 `const/let` 与它同名会直接抛 `SyntaxError` 并使整个文件失效（v1.8.2~v1.8.5 的空白界面就是这个原因）。要访问这类全局请直接写 `window.api`（或裸写 `api`，不要声明）—— 由 `test/contract.test.js` 守住。
+- **错误兜底必须最先加载且不依赖其它脚本**（`renderer/errortrap.js`）：否则「兜底代码所在的文件」一旦挂掉，故障就没有任何提示 —— 这正是空白界面的另一半原因。
 - **所有渲染层脚本与页面同目录**：页面 CSP 是 `script-src 'self'`，`file://` 下跨目录脚本能否命中 `'self'` 并不可靠，因此不使用子目录。
 - **进程边界有契约测试**：preload 暴露的 API ↔ 渲染层调用、IPC 通道 ↔ 主进程 handler、页面脚本清单 ↔ 实际文件，全部静态校验。
 
@@ -109,7 +114,7 @@ desktop-workbench/
 npm install            # 安装依赖（node_modules 不进入版本库）
 npm start              # 本地运行
 
-npm test               # 139 项回归测试（无需图形环境）
+npm test               # 141 项回归测试（无需图形环境）
 npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏，20 项断言）
 npm run check          # 语法检查（遍历所有 JS）
 npm run dist           # 生成 Windows 安装包（产物在 dist\）
@@ -170,16 +175,22 @@ npm audit --registry=https://registry.npmjs.org
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+### v1.8.6
+- **修复界面空白的真正根因**：`renderer/core.js` 顶层的 `const api = window.api;` 与 preload 注入的**不可配置**全局属性同名，抛 `SyntaxError: Identifier 'api' has already been declared`，导致 `core.js` 及其后全部脚本失效（页面只剩静态骨架）
+  - 在真实 Electron（Chromium 126）中复现并验证修复；打包产物实测 `结果=启动成功 阶段=rendered`
+  - `core.js` 不再声明 `api`（裸写的 `api` 解析到 `window.api`），`boot()` 显式检查 `window.api`
+- **新增 `renderer/errortrap.js`**：致命错误面板与全局错误处理移到**最先加载、不依赖任何脚本**的文件 —— 兜底代码不能和它要报告的故障放在同一个文件里（这正是此前「白屏却毫无提示」的原因）
+- 新增守卫测试：渲染层顶层声明不得与 preload 注入的全局同名（把 `const api` 加回去会立刻失败）、错误兜底脚本必须最先加载
+- **`npm run test:smoke` 现在可真正运行**：真实 Electron 加载真实页面，20 项断言全部通过
+
 ### v1.8.5
-- **启动失败自诊断**：渲染层看门狗（原生错误对话框 + `startup.log`）、启动阶段打点（`app-loaded → boot-started → data-loaded → rendered`）、单实例版本冲突提示
+- **启动失败自诊断**：渲染层看门狗（原生错误对话框 + `%APPDATA%\桌面工作台\startup.log`）、启动阶段打点（`app-loaded → boot-started → data-loaded → rendered`）、单实例版本冲突提示（这次的根因正是靠它写下的日志定位的）
 - 修复自身诊断工具的 asar 读取偏移错误（曾误报「打包后缺少 `boot();`」）
 - 新增打包产物与源码逐字节比对、文本编码完整性检查（防文档乱码）
-- 文档修复：README 与 v1.8.2 Release 说明的乱码已重写
 
 ### v1.8.4
-- **修复界面空白**：IPC 来源校验不再依赖 `senderFrame === sender.mainFrame` 这种 Electron 内部实现细节（打包环境下两者是不同实例，会把自身所有 IPC 拒掉），改用 `frame.parent` 判断并增加 `WebContents.getURL()` 回退
-- 启动失败不再白屏：渲染层错误面板 + 全局错误处理
-- 新增打包环境模拟测试（在旧实现下会以 `forbidden` 失败）
+- 修复 IPC 来源校验依赖 `senderFrame === sender.mainFrame` 的问题（打包环境下两者是不同实例，会把自身所有 IPC 拒掉）；启动失败不再只留白屏
+- 注：v1.8.4 **并未**解决空白界面 —— 真正的根因是上面的 `const api` 冲突，v1.8.6 才修好
 
 ### v1.8.3
 - 补回被拆分工具误删的页面启动调用 `boot();`，并新增渲染层启动测试
