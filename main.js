@@ -15,13 +15,19 @@ const { isSensitiveText } = require('./lib/sensitive.js');
 const dateutil = require('./renderer/dateutil.js');
 
 // 出错时把上下文写进控制台：静默 catch 会让问题无从排查（OCR / PowerShell / 数据导入等）
+/**
+ * @param {string} where  出错位置标识，如 'runOcr' / 'importData'
+ * @param {unknown} e     捕获到的任意异常值
+ * @returns {void}
+ */
 function logE(where, e) {
   try {
     console.warn('[workbench]', where, '::', (e && e.stack) || (e && e.message) || e);
   } catch (_) { /* ignore */ }
-} 
+}
 const { parseQuickTodo, buildQuickTodo } = require('./lib/quickadd.js');
 const usageDomain = require('./lib/usage.js');
+const { createUsageTracker } = require('./lib/usage-tracker.js');
 const { createIconCache } = require('./lib/iconcache.js');
 const { createRendererWatchdog } = require('./lib/renderer-watchdog.js');
 const { validatePatch } = require('./lib/patchguard.js');
@@ -36,6 +42,10 @@ const proto = require('./renderer/storeproto.js');
 // 本次未能取得锁时，把「运行中的版本」与「本次版本」写进启动日志，便于一眼看出。
 const runningInfoPath = () => path.join(app.getPath('userData'), 'running.json');
 
+/**
+ * 读取「正在运行的实例」诊断信息（running.json）。
+ * @returns {{version?: string, pid?: number, startedAt?: string}|null} 文件缺失或损坏时返回 null
+ */
 function readRunningInfo() {
   try { return JSON.parse(fs.readFileSync(runningInfoPath(), 'utf8')); } catch (e) { return null; }
 }
@@ -45,20 +55,25 @@ if (!gotLock) {
   try {
     const other = readRunningInfo();
     const myVersion = app.getVersion();
-    const lines = [
-      '==== 桌面工作台启动日志（未创建窗口）====',
-      '时间: ' + new Date().toISOString(),
-      '本次启动版本: ' + myVersion,
-      '本次可执行文件: ' + process.execPath,
-      '资源目录: ' + __dirname,
-      '结果: 已有实例正在运行，本次启动直接退出（单实例锁）',
-      other ? ('运行中的实例版本: ' + other.version + '（pid ' + other.pid + '，启动于 ' + other.startedAt + '）') : '运行中的实例: 未记录到版本信息（可能是更早的版本）',
-      other && other.version !== myVersion
-        ? '⚠️ 版本不一致：你看到的窗口属于运行中的旧实例 ' + other.version + '，不是本次安装的 ' + myVersion + '。\n   请先在系统托盘图标上右键 →「退出」，再重新启动本版本。'
-        : '版本一致，本次只是重复启动。'
-    ];
-    fs.mkdirSync(path.dirname(runningInfoPath()), { recursive: true });
-    fs.writeFileSync(path.join(app.getPath('userData'), 'startup.log'), lines.join('\n'), 'utf8');
+    // 单实例锁拦截下的启动日志：经看门狗的 writeStandalone 写入（D11 接线）。
+    // 此前这里手工拼了一份与 writeStandalone 同格式的日志，而那个函数
+    // 导出后一直没有调用点。
+    const standaloneWatchdog = createRendererWatchdog({
+      logPath: path.join(app.getPath('userData'), 'startup.log'),
+      appVersion: myVersion,
+      appPath: __dirname,
+    });
+    standaloneWatchdog.writeStandalone({
+      结果: '已有实例正在运行，本次启动直接退出（单实例锁）',
+      本次可执行文件: process.execPath,
+      运行中的实例: other
+        ? (other.version + '（pid ' + other.pid + '，启动于 ' + other.startedAt + '）')
+        : '未记录到版本信息（可能是更早的版本）',
+      版本一致性: (other && other.version !== myVersion)
+        ? ('不一致——你看到的窗口属于运行中的旧实例 ' + other.version + '，不是本次安装的 ' + myVersion +
+           '。请先在系统托盘图标上右键 →「退出」，再重新启动本版本。')
+        : '一致，本次只是重复启动。',
+    });
   } catch (e) { /* 诊断失败不影响退出 */ }
   app.quit();
 } else {
@@ -95,9 +110,14 @@ function main() {
     backupDir: backupDir(),
     defaults: defaultData,          // 函数声明已提升，此处仅传引用
     migrate: migrate,
-    log: (msg) => { try { console.log('[store] ' + msg); } catch (e) { /* ignore */ } },
-    onChange: (info) => broadcastChanged(info)
+    log: (msg) => { try { console.log('[store] ' + msg); } catch (e) { /* ignore */ } }
   });
+  // 全量审查修复：此前这里把 onChange 作为 createStore 的选项传入，
+  // 但 lib/store.js 并不支持该选项（事件只经 store.on() 分发），导致
+  // 主进程侧的 mutate/adopt 变更（快速添加待办、逾期顺延、提醒打标、
+  // 小组件开关）几乎从不广播，渲染层与小组件只能看到旧数据。
+  // 渲染层自己提交的补丁会带 origin='renderer'，接收方据此跳过回灌。
+  store.on((info) => broadcastChanged(info));
 
   function doBackup() { return store.backup(); }
   function listBackups() { return store.listBackups(); }
@@ -155,6 +175,10 @@ function main() {
   });
 
   // 启动装载：主文件损坏/缺失时由 store 从最近备份自愈，并通知用户
+  /**
+   * 读取主数据文件并在损坏/缺失时自动从最近备份恢复。
+   * @returns {{recoveredFrom?: string, migrated?: {steps: string[]}, [k: string]: unknown}} store 诊断信息
+   */
   function loadStoreWithRecovery() {
     store.load();
     const diag = store.diagnostics();
@@ -172,10 +196,19 @@ function main() {
   }
 
   // 权威副本（内存缓存引用）：调用方就地修改后需 saveStore() 落盘
+  /**
+   * @returns {object} 主数据状态的权威副本（store 内存缓存引用，就地修改后需 saveStore 落盘）
+   */
   function loadStore() { return store.read(); }
 
   // 落盘当前权威副本（兼容历史写法：saveStore(loadStore())）
-  function saveStore(data) { return store.adopt(data); }
+  // opts.silent=true：不广播数据变更（用于窗口位置记忆这类高频低价值写入）
+  /**
+   * @param {object} data  新的主数据状态（整份收养，替代当前权威副本）
+   * @param {{silent?: boolean}} [opts]
+   * @returns {Promise<object>} store.adopt 的结果
+   */
+  function saveStore(data, opts) { return store.adopt(data, opts); }
 
   // ---------------------------------------------------------------------------
   // 安全校验：只接受来自本应用 renderer 目录下顶层页面的 IPC 请求
@@ -242,7 +275,7 @@ function main() {
         // 位置没变就不落盘：拖动/缩放会频繁触发这里，写合并也架不住每次都推修订号
         if (cur && cur.x === b.x && cur.y === b.y && cur.width === b.width && cur.height === b.height) return;
         d.settings.winBounds = { x: b.x, y: b.y, width: b.width, height: b.height };
-        saveStore(d);
+        saveStore(d, { silent: true });   // 位置记忆不广播：否则每次拖完窗口渲染层都会整页重渲染
       } catch (e) { /* ignore */ }
     }, 400);
   }
@@ -455,6 +488,10 @@ function main() {
 
   // 数据变化广播：携带修订号与来源，渲染层据此决定是否回灌
   // origin='renderer' 表示渲染层自己刚提交的补丁，无需再回灌（避免重绘打断输入）
+  /**
+   * @param {{rev?: number, origin?: 'main'|'renderer'}} info  修订号与变更来源
+   * @returns {void}
+   */
   function broadcastChanged(info) {    try {
       const payload = {
         rev: (info && info.rev) || store.getRev(),
@@ -477,9 +514,9 @@ function main() {
       powershell: ps.diagnostics(),
       store: store.diagnostics(),
       usage: {
-        enabled: usageTrackingEnabled(),
-        sampling: !!usageHelper,
-        paused: usagePaused
+        enabled: usageTracker.isEnabled(),
+        sampling: usageTracker.isSampling(),
+        paused: usageTracker.isPaused()
       },
       clipboard: {
         historyEnabled: (loadStore().settings || {}).clipboardHistory !== false,
@@ -680,6 +717,13 @@ function main() {
     } catch (e) { /* ignore */ }
   }
 
+  /**
+   * 新增一条剪贴板历史。文本/图片/文件三种类型经指纹去重，超出容量由
+   * pruneClip() 淘汰最旧的未钉住条目。
+   * @param {{type: 'text'|'image'|'files', text?: string, imagePath?: string, files?: Array<{path: string, name?: string, dir?: boolean}>}} o
+   *        剪贴板采样内容（由 captureClipboard / 读文件流程构造）
+   * @returns {Promise<void>}
+   */
   function addClipItem(o) {
     try {
       const item = { id: clipUid(), time: Date.now(), pinned: false };
@@ -747,6 +791,7 @@ function main() {
   }
 
   // 每次轮询：读取当前剪贴板并和上次签名比较，变化才入库
+  /** 定时采样系统剪贴板（每 1200ms），新增内容经 addClipItem 去重入库。 */
   function captureClipboard() {
     if (isQuitting) return;
     let enabled = true;
@@ -940,6 +985,11 @@ function main() {
     return ocrWorkerPromise;
   }
 
+  /**
+   * 对剪贴板图片条目执行离线 OCR（tesseract.js，chi_sim+eng）。
+   * @param {string} id  剪贴板条目 id
+   * @returns {Promise<{ok: boolean, text?: string, msg?: string}>} 识别结果；条目不存在/不是图片时 ok=false
+   */
   function runOcr(id) {
     const it = findClipItem(id);
     if (!it || it.type !== 'image' || !it.imagePath) return Promise.resolve({ ok: false, msg: '没有可识别的图片' });
@@ -963,228 +1013,23 @@ function main() {
   // 前台窗口，主进程按采样间隔把真实时长归因到前一台应用。
   // 数据独立存放 usage-data.json，由主进程独占读写，不进主数据。
   // -----------------------------------------------------------
-  const USAGE_SAMPLE_MS = 5000;
-  const USAGE_FLUSH_MS = 30000;
-  const USAGE_KEEP_DAYS = 90;
-  const usageStorePath = () => path.join(app.getPath('userData'), 'usage-data.json');
-  let usageData = { days: {} };
-  let usageLoaded = false;
-  let usageTimer = null;
-  let usageFlushTimer = null;
-  let usageHelper = null;         // PowerShell 辅助子进程
-  let usageHelperBuf = '';        // stdout 行缓冲
-  let usageHelperLastOut = 0;     // 看门狗：最后收到输出的时间
-  let usageHelperStartedAt = 0;   // 看门狗宽限：刚启动时给足 Add-Type 编译时间
-  let usageLatest = null;         // 辅助进程最新一次前台采样 { exe, app, title }
-  let usageCurrent = null;        // 当前归因对象（上一次 tick 时的前台采样）
-  let usageLastTick = 0;
-  let usagePaused = false;        // 锁屏期间暂停
-
-  // 读取并规范化时间统计设置（老数据缺省时回退默认值；纯逻辑在 lib/usage.js）
   function ttSettings() {
     const d = loadStore();
     return usageDomain.normalizeTrackSettings(d.settings && d.settings.timeTrack, TIME_TRACK_DEFAULTS);
   }
 
-  function loadUsageData() {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(usageStorePath(), 'utf8'));
-      if (parsed && typeof parsed === 'object' && parsed.days && typeof parsed.days === 'object') {
-        usageData = { days: parsed.days };
-      } else {
-        usageData = { days: {} };
-      }
-    } catch (e) {
-      usageData = { days: {} };
-    }
-    usageLoaded = true;
-  }
-
-  function saveUsageData() {
-    try {
-      // 清理 90 天前的数据
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - USAGE_KEEP_DAYS);
-      const cutKey = dateKeyMain(cutoff);
-      for (const k of Object.keys(usageData.days)) {
-        if (k < cutKey) delete usageData.days[k];
-      }
-      fs.mkdirSync(path.dirname(usageStorePath()), { recursive: true });
-      const tmp = usageStorePath() + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(usageData), 'utf8');
-      fs.renameSync(tmp, usageStorePath());
-    } catch (e) { /* ignore */ }
-  }
-
-  function getUsageDay(dk) { return usageDomain.ensureDay(usageData, dk); }
-
-  // 分类：本应用自身 → 「桌面工作台」；否则按规则顺序匹配（实现见 lib/usage.js）。
-  // 分类在汇总时计算，规则修改后对历史数据即时生效。
-  function usageCategoryOf(exeKey, displayName) {
-    return usageDomain.categoryOf(exeKey, displayName, ttSettings().rules);
-  }
-
-  function addUsageSeconds(sample, seconds) {
-    try {
-      // 长尾合并等细节在 lib/usage.js；标题是否落盘由设置决定
-      usageDomain.addSeconds(usageData, dateKeyMain(), sample, seconds, ttSettings().recordTitles);
-    } catch (e) { /* ignore */ }
-  }
-
-  function startUsageHelper() {
-    if (process.platform !== 'win32' || usageHelper) return;
-    // PowerShell 不可用（被策略禁用/未探测完成）时显式降级，并把原因暴露给界面，
-    // 而不是让采样进程反复拉起失败、用户只看到「没有数据」。
-    if (!ps.isAvailable()) {
-      ps.noteFeature('usage-helper', false, ps.isChecked()
-        ? 'PowerShell 不可用（' + (ps.diagnostics().reason || '未知原因') + '），时间统计无法采样'
-        : '正在检测 PowerShell 环境…');
-      return;
-    }
-    if (!ps.diagnostics().canAddType) {
-      ps.noteFeature('usage-helper', false, '当前 PowerShell 语言模式为 ' + ps.diagnostics().languageMode + '，不允许 Add-Type，无法读取前台窗口');
-      return;
-    }
-    try {
-      usageHelperBuf = '';
-      // 说明：实测 -Command -（stdin 传脚本）对本脚本会静默卡住，故改用 -EncodedCommand
-      // （UTF-16LE base64，脚本约 2KB，远小于命令行长度限制），效果等同且无临时文件
-      usageHelper = ps.spawn(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand',
-        Buffer.from(usageDomain.USAGE_PS_SCRIPT, 'utf16le').toString('base64')]);
-      if (!usageHelper) return;
-      usageHelperLastOut = Date.now();
-      usageHelperStartedAt = Date.now();
-      usageHelper.stdout.on('data', (chunk) => {
-        usageHelperLastOut = Date.now();
-        usageHelperBuf += chunk.toString('utf8');
-        let idx;
-        while ((idx = usageHelperBuf.indexOf('\n')) !== -1) {
-          const line = usageHelperBuf.slice(0, idx).trim();
-          usageHelperBuf = usageHelperBuf.slice(idx + 1);
-          if (!line) continue;
-          try {
-            const o = JSON.parse(line);
-            if (o && typeof o.exe === 'string') {
-              usageLatest = {
-                exe: String(o.exe || ''),
-                app: String(o.app || '') || String(o.exe || ''),
-                title: String(o.title || '')
-              };
-              ps.noteFeature('usage-helper', true);
-            }
-          } catch (e) { /* 忽略无法解析的行 */ }
-        }
-      });
-      usageHelper.stderr.on('data', () => { /* 忽略 */ });
-      usageHelper.on('error', (err) => {
-        ps.noteFeature('usage-helper', false, '采样进程启动失败：' + String((err && err.message) || err));
-      });
-      usageHelper.on('exit', () => {
-        usageHelper = null;
-        // 异常退出（含被看门狗击杀）后由 reconcileUsage 自动拉起
-        if (usageTrackingEnabled()) setTimeout(() => { try { reconcileUsage(); } catch (e) { /* ignore */ } }, 1000);
-      });
-    } catch (e) {
-      usageHelper = null;
-      ps.noteFeature('usage-helper', false, String((e && e.message) || e));
-    }
-  }
-
-  function usageTrackingEnabled() {
-    return process.platform === 'win32' && ttSettings().enabled;
-  }
-
-  // 按开关启停采集与落盘定时器；每次 tick 与设置保存后都会调用，保证自愈
-  function reconcileUsage() {
-    if (!usageLoaded) loadUsageData();
-    if (usageTrackingEnabled()) {
-      if (!usageTimer) {
-        usageLastTick = Date.now();
-        usageTimer = setInterval(usageTick, USAGE_SAMPLE_MS);
-      }
-      if (!usageFlushTimer) usageFlushTimer = setInterval(saveUsageData, USAGE_FLUSH_MS);
-      if (!usageHelper) startUsageHelper();
-    } else {
-      if (usageTimer || usageFlushTimer) saveUsageData(); // 停止前把内存里的增量落盘
-      if (usageTimer) { clearInterval(usageTimer); usageTimer = null; }
-      if (usageFlushTimer) { clearInterval(usageFlushTimer); usageFlushTimer = null; }
-      if (usageHelper) { try { usageHelper.kill(); } catch (e) { /* ignore */ } usageHelper = null; }
-      usageLatest = null;
-      usageCurrent = null;
-    }
-  }
-
-  function usageTick() {
-    try {
-      const now = Date.now();
-      const cfg = ttSettings();
-      // 看门狗：辅助进程未启动则拉起；运行中 10 秒无输出则重启（启动后 15 秒宽限，等 Add-Type 编译）
-      if (cfg.enabled && process.platform === 'win32') {
-        if (!usageHelper) startUsageHelper();
-        else if (now - usageHelperStartedAt > 15000 && now - usageHelperLastOut > 10000) {
-          try { usageHelper.kill(); } catch (e) { /* ignore */ }
-          usageHelper = null;
-          startUsageHelper();
-        }
-      }
-      if (!cfg.enabled || usagePaused) {
-        usageLastTick = now;
-        usageCurrent = null;
-        return;
-      }
-      let idleSec = 0;
-      try { idleSec = powerMonitor.getSystemIdleTime(); } catch (e) { idleSec = 0; }
-      const gap = usageLastTick ? Math.max(0, now - usageLastTick) : 0;
-      if (idleSec >= cfg.idleSeconds) {
-        // 空闲期间不累计；把归因对象推进到当前前台，避免唤醒后错记
-        usageLastTick = now;
-        usageCurrent = usageLatest;
-        return;
-      }
-      // 两条采样之间的真实间隔计给前一台应用；单次上限 2×采样间隔（防休眠后错记）
-      if (usageCurrent && gap >= 1000 && gap <= 2 * USAGE_SAMPLE_MS) {
-        addUsageSeconds(usageCurrent, Math.round(gap / 1000));
-      }
-      usageCurrent = usageLatest;
-      usageLastTick = now;
-    } catch (e) { /* ignore */ }
-  }
-
-  function emptyUsageSummary() {
-    return usageDomain.emptySummary(process.platform === 'win32');
-  }
-
-  function usageSummary(days) {
-    if (!usageLoaded) loadUsageData();
-    const cfg = ttSettings();
-    if (process.platform !== 'win32') {
-      const out = usageDomain.emptySummary(false);
-      out.enabled = cfg.enabled;
-      return out;
-    }
-    const today = dateKeyMain();
-
-    // 近 days 天（含今天）逐日聚合
-    const dayKeys = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      dayKeys.push(dateKeyMain(d));
-    }
-
-    let pomoDone = {};
-    try { pomoDone = loadStore().pomoDone || {}; } catch (e) { pomoDone = {}; }
-
-    // 聚合逻辑在 lib/usage.js（纯函数，有单测）
-    return usageDomain.summarize(usageData, {
-      dayKeys: dayKeys,
-      today: today,
-      enabled: cfg.enabled,
-      recordTitles: cfg.recordTitles,
-      pomoDone: pomoDone,
-      categoryOf: usageCategoryOf
-    });
-  }
+  // 时间统计整段拆到 lib/usage-tracker.js（整改 #12 第一刀）：
+  // 采集、看门狗、落盘（usage-data.json，模块自有数据源）与汇总都在那里；
+  // 设置读取（ttSettings）与主数据访问（pomoDone）经依赖注入，模块不直接依赖 store。
+  const usageTracker = createUsageTracker({
+    storePath: () => path.join(app.getPath('userData'), 'usage-data.json'),
+    ps: ps,
+    powerMonitor: powerMonitor,
+    ttSettings: ttSettings,
+    dateKey: dateKeyMain,
+    readStoreData: () => loadStore(),
+    logE: logE,
+  });
 
   // -----------------------------------------------------------
   // 截图 OCR 取字（Win+Alt+S）：全屏覆盖层框选 → 裁剪 → OCR → 自动复制
@@ -1702,7 +1547,7 @@ function main() {
       return { ok: false, rev: store.getRev(), changed: false, error: bad };
     }
     const r = store.commit(patch);
-    reconcileUsage();   // 时间统计开关等设置可能变化，立即自愈
+    usageTracker.reconcile();   // 时间统计开关等设置可能变化，立即自愈
     reconcileWidgets(); // 桌面小组件开关可能变化
     return r;
   });
@@ -1784,15 +1629,14 @@ function main() {
 
   // ----- 自动时间统计 -----
   ipcMain.handle('usage:getSummary', (event, opts) => {
-    if (!isTrustedSender(event)) return emptyUsageSummary();
+    if (!isTrustedSender(event)) return usageTracker.emptySummary();
     const days = Math.max(1, Math.min(30, parseInt(opts && opts.days, 10) || 7));
-    return usageSummary(days);
+    return usageTracker.summary(days);
   });
 
   ipcMain.handle('usage:clear', (event) => {
     if (!isTrustedSender(event)) return { ok: false };
-    usageData = { days: {} };
-    saveUsageData();
+    usageTracker.clear();
     return { ok: true };
   });
 
@@ -1880,7 +1724,7 @@ function main() {
   ipcMain.handle('app:probePowershell', async (event) => {
     if (!isTrustedSender(event)) throw new Error('forbidden');
     await ps.probe(true);
-    reconcileUsage();      // 环境变化后时间统计可能可以从降级恢复
+    usageTracker.reconcile();      // 环境变化后时间统计可能可以从降级恢复
     return appDiagnostics();
   });
 
@@ -2189,10 +2033,10 @@ function main() {
     setInterval(captureClipboard, 1200);
 
     // 自动时间统计：按设置开关自愈启停（仅 Windows 生效）
-    loadUsageData();
-    reconcileUsage();
-    powerMonitor.on('lock', () => { usagePaused = true; });   // 锁屏立即暂停
-    powerMonitor.on('unlock', () => { usagePaused = false; usageLastTick = Date.now(); });
+    usageTracker.load();
+    usageTracker.reconcile();
+    powerMonitor.on('lock', () => { usageTracker.setPaused(true); });    // 锁屏立即暂停
+    powerMonitor.on('unlock', () => { usageTracker.setPaused(false); }); // 解锁恢复并复位归因时钟
 
     // 桌面小组件：按设置开关启停
     reconcileWidgets();
@@ -2207,7 +2051,7 @@ function main() {
     screen.on('display-removed', handleDisplayChange);
 
     // PowerShell 能力探测：异步进行，不阻塞启动；探测结果变化会推送给界面
-    ps.probe().then(() => { try { reconcileUsage(); } catch (e) { /* ignore */ } }).catch(() => { /* ignore */ });
+    ps.probe().then(() => { try { usageTracker.reconcile(); } catch (e) { /* ignore */ } }).catch(() => { /* ignore */ });
 
     // 待办到期提醒 + 每日汇总 + 逾期顺延 + 自动整理：启动后每 30 秒检查一次
     setInterval(() => { checkReminders(); checkDailySummary(); autoAdvanceOverdue(); runAutoOrganize(); }, 30 * 1000);
@@ -2236,9 +2080,7 @@ function main() {
   });
 
   app.on('will-quit', () => {
-    try { if (usageHelper) usageHelper.kill(); } catch (e) { /* ignore */ }
-    usageHelper = null;
-    try { saveUsageData(); } catch (e) { /* ignore */ } // 退出前落盘时间统计增量
+    try { usageTracker.dispose(); } catch (e) { /* ignore */ } // 停采样进程并落盘时间统计增量
     try { store.flush(); } catch (e) { /* ignore */ }   // 退出前把写合并窗口里的主数据落盘
     try { fs.rmSync(runningInfoPath(), { force: true }); } catch (e) { /* ignore */ }
     try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }

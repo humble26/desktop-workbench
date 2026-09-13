@@ -133,7 +133,11 @@
   }
 
   /* 计算补丁：base = 已知服务端状态，next = 当前本地状态（均已剥离界面状态）。
-     返回 null 表示没有需要落盘的改动。 */
+     返回 null 表示没有需要落盘的改动。
+     @param {object|null} base  服务端快照
+     @param {object|null} next  当前内存状态
+     @returns {object|null} { collections: {<name>: {upsert?, remove?, order?}}, settings, top }
+              （协议白名单见 lib/patchguard.js） */
   function diffPatch(base, next) {
     const b = isPlainObject(base) ? base : {};
     const n = isPlainObject(next) ? next : {};
@@ -167,7 +171,10 @@
   }
 
   /* 应用补丁到权威副本。返回新对象，不修改入参。
-     并发新增（主进程写进来、渲染层这次补丁里没有的条目）会被保留。 */
+     并发新增（主进程写进来、渲染层这次补丁里没有的条目）会被保留。
+     @param {object|null} base   旧状态
+     @param {object|null} patch  diffPatch 产出的补丁
+     @returns {object} 应用补丁后的新状态 */
   function applyPatch(base, patch) {
     const out = Object.assign({}, isPlainObject(base) ? base : {});
     const cols = isPlainObject(patch) && isPlainObject(patch.collections) ? patch.collections : {};

@@ -74,6 +74,9 @@
     setInterval(renderClock, 1000);
   } else {
     renderFromStore();
+    // 数据变更即时推送（主进程 data:changed 广播，D12）：此前只靠 10 秒轮询，
+    // 增删待办后小组件最长要等 10 秒才反映。轮询保留作为兜底。
+    if (typeof api.onChanged === 'function') api.onChanged(() => renderFromStore());
     setInterval(renderFromStore, 10000);
     // 隐藏期间跳过了轮询，重新显示时立即刷新一次
     document.addEventListener('visibilitychange', () => {

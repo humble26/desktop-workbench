@@ -58,7 +58,22 @@ const ACCENTS = [
 ];
 const GROUP_COLORS = ['#6f8f6a', '#5f7a99', '#bd8a4e', '#b5715a', '#7d7195', '#2563eb'];
 
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function uid() {
+  // 优先用 crypto.randomUUID（安全随机、无碰撞担忧）。原实现是
+  // Date.now + Math.random 的短 id，随机部分只有 5 个 base36 字符，
+  // 高频批量创建时存在真实碰撞风险——而 id 一旦撞上，upsert/remove
+  // 会作用到别人的条目上。
+  // 旧数据无需迁移：id 只是透明主键，patchguard 只要求 id 存在、不校验
+  // 格式，新（UUID）/旧（短 id）格式可以长期并存。
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+    return Array.from(window.crypto.getRandomValues(new Uint8Array(16)),
+      b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -81,6 +96,11 @@ function norm(pathStr) { return String(pathStr || '').replace(/\\/g, '/'); }
 // 主进程是唯一的落盘者，因此主进程的并发写入（快速添加待办 / 逾期顺延 /
 // 提醒标记 / 小组件开关）不会被这里的整份快照覆盖。
 // ---------------------------------------------------------------
+/**
+ * 请求落盘：把当前 state 与服务端快照的差异作为补丁提交（异步、串行合并）。
+ * @param {boolean} silent  true 时不做失败提示（后台静默保存）
+ * @returns {Promise<boolean>} 提交链的最终结果（ true=已提交或无差异 ）
+ */
 function save(silent) {
   if (!state || !proto) return Promise.resolve(false);
   savePending = true;
@@ -89,6 +109,12 @@ function save(silent) {
   return saveChain;
 }
 
+/**
+ * 保存链的实际执行体：循环取走 savePending 期间积累的改动，
+ * 每轮都基于最新服务端快照重新差分，天然合并中间状态。
+ * @param {boolean} silent
+ * @returns {Promise<boolean>}
+ */
 async function drainSave(silent) {
   while (savePending) {
     savePending = false;

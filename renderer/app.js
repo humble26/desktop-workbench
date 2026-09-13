@@ -12,6 +12,12 @@
 // 主进程会在窗口加载后检查 __wbBooted / __wbStage，失败时弹原生对话框并写日志。
 markStage('app-loaded');
 
+/**
+ * 应用启动入口：读数据 → 归一化 → 装配界面 → 标记 __wbBooted。
+ * 由 app.js 末尾的 boot(); 调用（v1.8.2 拆分时曾因丢失该调用导致全脚本
+ * 加载却不启动——contract.test.js 现在强制 app.js 必须最后加载）。
+ * @returns {Promise<void>}
+ */
 async function boot() {
   markStage('boot-started');
   // 必须显式检查 window.api：core.js 故意不再声明 `const api`（见那里的注释），
