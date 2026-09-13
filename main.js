@@ -1220,8 +1220,7 @@ function main() {
         if (!d.settings.widgets || typeof d.settings.widgets !== 'object') d.settings.widgets = {};
         if (d.settings.widgets[name] !== false) {
           d.settings.widgets[name] = false;
-          saveStore(d);
-          broadcastChanged();
+          saveStore(d);   // adopt→bump→store.on 已广播，无需再手动 broadcastChanged（避免双重回灌）
         }
       }
     });
@@ -1261,8 +1260,7 @@ function main() {
     if (!d.settings.widgets || typeof d.settings.widgets !== 'object') d.settings.widgets = {};
     if (d.settings.widgets[name] !== false) {
       d.settings.widgets[name] = false;
-      saveStore(d);
-      broadcastChanged();
+      saveStore(d);   // adopt→bump→store.on 已广播，无需再手动 broadcastChanged（避免双重回灌）
     }
     return true;
   });
