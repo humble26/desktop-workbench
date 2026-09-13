@@ -524,11 +524,13 @@ function main() {
       usage: {
         enabled: usageTracker.isEnabled(),
         sampling: usageTracker.isSampling(),
-        paused: usageTracker.isPaused()
+        paused: usageTracker.isPaused(),
+        lastSaveError: (function () { try { return usageTracker.lastSaveError(); } catch (e) { return null; } })()
       },
       clipboard: {
         historyEnabled: (loadStore().settings || {}).clipboardHistory !== false,
-        items: (clipData.items || []).length
+        items: (clipData.items || []).length,
+        lastSaveError: clipLastSaveError
       },
       hotkeys: hotkeyStatus(),
       icons: (function () { try { return iconCache.stats(); } catch (e) { return { files: 0, bytes: 0 }; } })(),
@@ -623,6 +625,7 @@ function main() {
   const clipDir = () => path.join(app.getPath('userData'), 'clipboard');
   let clipData = { items: [] };
   let clipLoaded = false;
+  let clipLastSaveError = null;         // 最近一次历史落盘失败原因（诊断页展示；审查 B14）
   let suppressClipUntil = 0;            // 写回剪贴板后短暂抑制采集，避免把自己复制的再次记录
   let lastClip = { filesKey: '', thumb: '', text: '' };
   let clipHotkeyOn = false;
@@ -651,7 +654,11 @@ function main() {
       const tmp = clipStorePath() + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(clipData));
       fs.renameSync(tmp, clipStorePath());
-    } catch (e) { /* ignore */ }
+      clipLastSaveError = null;
+    } catch (e) {
+      // 不抛出（采集循环不能被打断），但必须在诊断页可见，不能静默丢数据
+      clipLastSaveError = String((e && e.message) || e);
+    }
   }
 
   function deleteClipImage(it) {
