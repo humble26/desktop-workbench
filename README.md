@@ -2,7 +2,7 @@
 
 一个集成 **待办 / 便签 / 打卡 / 番茄钟 / 剪贴板历史 / 截图 OCR / 时间统计 / 文件自动整理 / 桌面小组件** 的 Windows 桌面效率应用。基于 Electron，界面简约，**数据全部本地存储、不联网**。
 
-> 当前版本：**v1.8.6** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
+> 当前版本：**v1.8.7** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
 
 > ⚠️ **如果你装的是 v1.8.2 / v1.8.3 / v1.8.4 / v1.8.5：请直接改用 v1.8.6。**
 > 这些版本启动后界面是空白的（侧栏品牌可见，但导航、首页、窗口按钮全空）。根因是 `renderer/core.js` 顶层的 `const api = window.api;` —— preload 通过 `contextBridge` 暴露的 `window.api` 是**不可配置**属性，脚本顶层的 `const` 与它同名会直接抛 `SyntaxError`，导致整个 `core.js` 及其后所有脚本失效；该问题自 v1.8.2 把 `app.js` 拆成多脚本时引入。详见 [更新日志](CHANGELOG.md)。

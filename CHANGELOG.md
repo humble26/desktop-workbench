@@ -2,6 +2,44 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。完整下载见 [Releases](https://github.com/humble26/desktop-workbench/releases)。
 
+## v1.8.7 —— 广播链路补全、图标清理修正与失败可见化
+
+> 依据《全项目审查报告-20260913》（Y1/Y2/B9–B11/B13/B14/X7–X9/O12/O13/R6）逐项整改。
+
+### 修复
+- **preload 转发 `data:changed` 载荷**：此前 `onChanged` 写成 `() => cb()`，`{rev, origin}`
+  被丢弃，渲染层「自己提交的补丁不回灌」从未生效——每次保存都触发 `api.load()` + 全量
+  重渲染，v1.8.6 的 A1 广播接线只接通了一半
+- **快捷方式图标不再每次启动被清空重取**：启动清理判据统一为 `proto.isInlineIcon`
+  （只清 base64 内联与历史占位串，保留现行的 file:// / icon: 短引用）。旧判据
+  `length < 2500` 写于 base64 时代，iconcache 短引用只有几十~一百多字符，条件每启必中；
+  `app.js` / `lib/migrate.js` / `importguard.js` 三处共用同一把尺子
+- 小组件关闭路径删除手工 `broadcastChanged()`：`saveStore` 的 adopt→bump→store.on
+  已广播一次，显式调用造成同一变更广播两次 →（A1 收尾后）渲染层双重回灌（B13/O14）
+- `pomoDone` 移出回灌 keep 列表：持久化字段权威在主进程，防渲染层旧值覆盖（B11）
+- **主数据文件与全部备份都损坏时不再无痕重建**：坏文件改名留存为
+  `workbench-data.json.corrupt-<时间戳>`，`store.diagnostics().fatalReset` 置位，
+  启动时弹系统通知告知找回途径（B10/O4）
+- usage-data.json / clipboard-history.json 落盘失败记 `lastSaveError` 并进设置页
+  诊断，不再静默丢数据（B14）
+- 剪贴板条目 id 改 `crypto.randomUUID()`（与 v1.8.6 的渲染层 uid 同理防碰撞）；
+  图片预览改用主进程 `pathToFileURL` 生成的合法 URL——`encodeURI('file:///'+path)`
+  对含 `#`/`%`/`?` 的路径会截断或误解
+- 时间统计页统计卡取色键语义化，不再借用其它模块的 CHIP 键名
+
+### 防线与测试（`npm test` 147 项 + 冒烟 20 项全绿）
+- `contract.test.js`：`data:changed` 载荷必须转发给回调（通道名级校验测不出这类断点）；
+  **52 个 `ipcMain.handle` 入口都必须校验 `isTrustedSender`**（O12）；CSP 严格性断言
+  （`default-src 'none'` / `script-src 'self'` 无 inline / `connect-src 'none'`，O13）
+- `store.test.js`：损坏终局（默认值重建 + `*.corrupt` 留存 + fatalReset 可见）与
+  全新安装不算 fatalReset 两条
+- `storeproto.test.js`：`isInlineIcon` 全形态断言（含「现行短引用必须保留」回归）
+- 冒烟 harness 补 `app:diagnostics` / `app:probePowershell` 桩，消除每次冒烟
+  2 条主进程侧 `No handler registered` 噪音报错（R6）
+
+### 说明
+- 打包物需以 electron-builder 重新生成后发布；本条目仅覆盖源码变更。
+
 ## v1.8.6 —— 找到并修复「界面空白」的真正根因
 
 ### 真正的根因（在真实 Chromium 里复现出来的）
