@@ -66,6 +66,32 @@ test('data:changed 的载荷必须转发给回调（app.js 靠 origin 区分「�
   assert.strictEqual(m[1], m[2], '载荷参数未原样转发');
 });
 
+test('主进程每个 ipcMain.handle 的入口都校验 isTrustedSender（O12 防回归）', () => {
+  const problems = [];
+  let count = 0;
+  const re = /ipcMain\.handle\('([^']+)',\s*(?:async\s*)?\(([^)]*)\)\s*=>\s*\{/g;
+  let m;
+  while ((m = re.exec(mainSrc)) !== null) {
+    count++;
+    // 守卫必须是 handler 的入口语句（在本体开头 400 字符内）
+    const body = mainSrc.slice(m.index, m.index + 400);
+    if (body.indexOf('isTrustedSender') === -1) problems.push(m[1]);
+  }
+  assert.ok(count >= 40, '提取到的 handler 数偏少，正则可能失效：' + count);
+  assert.deepStrictEqual(problems, [], '缺少 isTrustedSender 守卫的 handler：' + problems.join(', '));
+});
+
+test('index.html 的 CSP 保持严格：无内联脚本、禁外联（O13 防回归）', () => {
+  const html = read(path.join(RENDERER, 'index.html'));
+  const m = /<meta http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html);
+  assert.ok(m, 'index.html 缺少 CSP meta');
+  const csp = m[1];
+  assert.ok(csp.indexOf("default-src 'none'") !== -1, "CSP 应含 default-src 'none'");
+  assert.ok(csp.indexOf("script-src 'self'") !== -1, "CSP 应含 script-src 'self'");
+  assert.strictEqual(/script-src[^;]*'unsafe-inline'/.test(csp), false, 'script-src 不得放行 unsafe-inline');
+  assert.ok(csp.indexOf("connect-src 'none'") !== -1, "CSP 应含 connect-src 'none'（离线应用禁止任何远程请求）");
+});
+
 test('渲染层调用的每个 api 方法都在 preload 白名单里', () => {
   const problems = [];
   for (const f of rendererFiles) {

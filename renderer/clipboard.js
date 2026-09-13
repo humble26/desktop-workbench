@@ -115,8 +115,8 @@
   function closeOvl() { ovl.innerHTML = ''; }
 
   function openImagePreview(it) {
-    if (!it.imagePath) return;
-    const src = encodeURI('file:///' + String(it.imagePath).replace(/\\/g, '/'));
+    if (!it.imageSrc) return;   // 主进程已用 pathToFileURL 生成合法 URL（encodeURI 对 #/%/? 会截断或误解）
+    const src = it.imageSrc;
     ovl.innerHTML = `<div class="overlay" id="cbOvlBox"><div class="modal cb-modal">
       <h3>图片预览 <span class="dim" style="font-size:12px;font-weight:600">${it.width || '?'}×${it.height || '?'}</span></h3>
       <div class="cb-preview"><img src="${src}" alt="" draggable="false" /></div>

@@ -78,8 +78,21 @@ function registerIpc() {
     today: { total: 0, categories: [], topApps: [] },
     daily: [], topApps: [], categories: [], topTitles: [], pomodoros: { today: 0, week: 0 }
   }));
+  // 设置页/诊断推送所需的最小形状（app.js onDiagnostics 与设置页读取
+  // powershell.features / store / usage / clipboard 等字段）。
+  // 此前缺 app:diagnostics 桩，每次冒烟都打印 2 条「No handler registered」，
+  // 会稀释真实故障信号（审查 R6）。
+  const smokeDiagnostics = {
+    version: '1.8.2-smoke', platform: process.platform, userData: tmpDir, hotkey: 'Win+Alt+Space',
+    powershell: { platform: process.platform, checked: true, available: false, reason: 'smoke-stub', features: {} },
+    store: store.diagnostics(),
+    usage: { enabled: false, sampling: false, paused: false, lastSaveError: null },
+    clipboard: { historyEnabled: true, items: 0, lastSaveError: null },
+    hotkeys: [], icons: { files: 0, bytes: 0 }, ipc: { lastRejection: null }
+  };
   // 其余通道给一个不会抛异常的空实现（本测试不校验 OS 集成）
   const benign = {
+    'app:diagnostics': smokeDiagnostics, 'app:probePowershell': smokeDiagnostics,
     'fs:resolveItem': null, 'fs:getIcon': null, 'fs:open': '', 'fs:reveal': '',
     'dialog:pickFiles': [], 'dialog:pickFolder': null, 'dialog:pickApp': null,
     'clip:list': [], 'clip:copy': { ok: true }, 'clip:pin': { ok: true }, 'clip:delete': { ok: true },

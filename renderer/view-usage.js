@@ -83,10 +83,10 @@ async function renderUsage(v) {
   v.innerHTML = `
     ${header('usage', `<span class="usage-flag">${icon('clock', 13)} 采样中 · 每 5 秒</span>`)}
     <div class="stats">
-      <div class="stat">${chip('clock', '快捷入口')}<div class="v">${esc(fmtDur(todayTotal))}</div><div class="l">今日活跃时长${delta ? ' · 较昨日 ' + esc(delta) : ''}</div></div>
-      <div class="stat">${chip('grid', '待办')}<div class="v" style="font-size:16px;line-height:34px">${esc(topApp ? topApp.name : '—')}</div><div class="l">今日最常用应用${topApp ? ' · ' + esc(fmtDur(topApp.seconds)) : ''}</div></div>
-      <div class="stat">${chip('calendar', '数据洞察')}<div class="v">${sum.dayCount || 0}</div><div class="l">已记录天数 · 自动保留 90 天</div></div>
-      <div class="stat">${chip('timer', '打卡')}<div class="v">${sum.pomodoros.today || 0}</div><div class="l">今日番茄 · 本周 ${sum.pomodoros.week || 0} 个</div></div>
+      <div class="stat">${chip('clock', '今日活跃时长')}<div class="v">${esc(fmtDur(todayTotal))}</div><div class="l">今日活跃时长${delta ? ' · 较昨日 ' + esc(delta) : ''}</div></div>
+      <div class="stat">${chip('grid', '今日最常用应用')}<div class="v" style="font-size:16px;line-height:34px">${esc(topApp ? topApp.name : '—')}</div><div class="l">今日最常用应用${topApp ? ' · ' + esc(fmtDur(topApp.seconds)) : ''}</div></div>
+      <div class="stat">${chip('calendar', '已记录天数')}<div class="v">${sum.dayCount || 0}</div><div class="l">已记录天数 · 自动保留 90 天</div></div>
+      <div class="stat">${chip('timer', '今日番茄')}<div class="v">${sum.pomodoros.today || 0}</div><div class="l">今日番茄 · 本周 ${sum.pomodoros.week || 0} 个</div></div>
     </div>
     <div class="insight-grid">
       <div class="card insight-card">

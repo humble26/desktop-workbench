@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const { pathToFileURL } = require('url');
 const { spawn, execFile } = require('child_process');
 const { createStore } = require('./lib/store.js');
 const { migrate } = require('./lib/migrate.js');
@@ -631,7 +632,11 @@ function main() {
   let clipHotkeyOn = false;
   let cbWin = null;                     // 剪贴板历史弹窗
 
-  function clipUid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  function clipUid() {
+    // 与 renderer/core.js 的 uid() 同理（整改 #14）：短随机 id 有碰撞风险，
+    // 撞上会让删除/置顶作用到别人的条目。randomUUID 不可用时才退回旧短 id。
+    try { return crypto.randomUUID(); } catch (e) { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+  }
 
   // 剪贴板敏感内容过滤是否开启（默认开启；设置页可关闭）
   function clipSensitiveEnabled() {
@@ -848,6 +853,12 @@ function main() {
     } catch (e) { /* ignore */ }
   }
 
+  // pathToFileURL 是 file:// 的权威转换（encodeURI 对 #/%/? 会截断或误解）；
+  // 异常路径名解析失败返回 null，渲染层据此跳过预览
+  function fileUrlOf(p) {
+    try { return pathToFileURL(p).href; } catch (e) { return null; }
+  }
+
   function listClip(opts) {
     if (!clipLoaded) loadClipData();
     opts = opts || {};
@@ -862,6 +873,7 @@ function main() {
     }).map(it => ({
       id: it.id, type: it.type, text: it.text, files: it.files,
       width: it.width, height: it.height, thumb: it.thumb, imagePath: it.imagePath,
+      imageSrc: it.imagePath ? fileUrlOf(it.imagePath) : null,
       ocrText: it.ocrText, pinned: !!it.pinned, time: it.time
     }));
   }
