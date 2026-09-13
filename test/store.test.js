@@ -131,8 +131,31 @@ test('主文件损坏时从最近备份自愈', () => {
   assert.strictEqual(d.todos[0].text, '来自备份');
   const diag = s.diagnostics();
   assert.strictEqual(diag.recoveredFrom, 'workbench-20260101-000000.json');
+  assert.strictEqual(diag.fatalReset, false, '成功自愈不算致命重置');
   // 自愈后应把恢复结果写回主文件
   assert.doesNotThrow(() => JSON.parse(fs.readFileSync(file, 'utf8')));
+});
+
+test('主文件与全部备份都损坏时：默认值重建、留存 *.corrupt 原始文件、诊断可见', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'workbench-data.json');
+  fs.writeFileSync(file, '{ 这不是 JSON', 'utf8');
+  const s = newStore(dir);
+  const d = s.read();
+  assert.strictEqual(d.version, 2, '应使用默认值重建');
+  assert.strictEqual(s.diagnostics().fatalReset, true, 'fatalReset 必须在诊断中可见');
+  const leftover = fs.readdirSync(dir).filter(f => f.startsWith('workbench-data.json.corrupt-'));
+  assert.strictEqual(leftover.length, 1, '损坏的原始文件应改名留存：' + leftover.join(','));
+  assert.strictEqual(fs.readFileSync(path.join(dir, leftover[0]), 'utf8'), '{ 这不是 JSON', '留存文件必须是原始内容');
+  // 重建后主文件立即存在（默认值），而不是等第一次改动才出现
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).version, 2);
+});
+
+test('全新安装（无主文件无备份）不算 fatalReset', () => {
+  const dir = tmpDir();
+  const s = newStore(dir);
+  s.read();
+  assert.strictEqual(s.diagnostics().fatalReset, false);
 });
 
 test('备份：写入合并窗口内的改动也会被 flush 后再备份，并只保留最近 N 份', () => {

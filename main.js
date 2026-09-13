@@ -189,6 +189,14 @@ function main() {
         }
       } catch (e) { /* ignore */ }
     }
+    if (diag.fatalReset) {
+      // 主文件与全部备份都读不出来，已用默认值重建（B10：此前这一结局完全无痕）
+      try {
+        if (Notification.isSupported()) {
+          new Notification({ title: '数据已重置', body: '主数据文件与全部备份均无法读取，已使用默认值重建。原始文件已保留为 workbench-data.json.corrupt-*，如需找回请把该文件反馈给维护者。' }).show();
+        }
+      } catch (e) { /* ignore */ }
+    }
     if (diag.migrated && diag.migrated.steps && diag.migrated.steps.length) {
       try { console.log('[store] 迁移明细：' + diag.migrated.steps.join('；')); } catch (e) { /* ignore */ }
     }
