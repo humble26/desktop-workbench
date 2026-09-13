@@ -98,11 +98,13 @@ async function boot() {
       const fresh = await api.load();
       const data = (fresh && fresh.data) ? fresh.data : fresh;
       if (!data) return;
-      // 保留界面状态（不参与持久化的那部分）
+      // 保留界面状态（不参与持久化的那部分）。
+      // ⚠️ 只留纯 ephemeral 键：pomoDone 是持久化字段（权威在主进程），
+      // 若按本地值保留，回灌会用旧值覆盖服务器上的最新番茄统计（审查 B11）。
       const keep = {
         view: state.view, _calSel: state._calSel, _calCursor: state._calCursor,
         _todoLv: state._todoLv, _todoFilter: state._todoFilter,
-        _pomo: state._pomo, pomoDone: state.pomoDone
+        _pomo: state._pomo
       };
       state = data;
       baseRev = (fresh && fresh.rev) || baseRev;
