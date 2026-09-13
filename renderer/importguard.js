@@ -11,11 +11,18 @@
    这里按「白名单 + 类型校验 + 危险项回退」处理，宁可少导入也不要导入脏数据。
    =========================================================================== */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else { root.WB = root.WB || {}; root.WB.importguard = factory(); }
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(root);
+  else { root.WB = root.WB || {}; root.WB.importguard = factory(root); }
+})(typeof self !== 'undefined' ? self : this, function (root) {
 
   const COLLECTIONS = ['todos', 'notes', 'checkins', 'shortcuts', 'groups'];
+
+  // 图标清理判据与数据协议共享（storeproto 在页面加载顺序上必然先于本文件；
+  // Node 单测直接 require 同目录 storeproto；两者都不可用时退化为仅判 data:）。
+  const proto = (root && root.WB && root.WB.proto)
+    || (typeof require === 'function' ? require('./storeproto.js') : null);
+  const isInlineIcon = (proto && proto.isInlineIcon)
+    || function (v) { const s = String(v == null ? '' : v); return !!s && /^data:/i.test(s); };
 
   // Windows 绝对路径（含 UNC）；用于拒绝自动整理规则里的相对路径
   function isAbsPath(p) {
@@ -49,9 +56,10 @@
       if (!Array.isArray(g.items)) g.items = [];
       else g.items = g.items.filter(it => isObj(it));
     });
-    // 快捷方式的图标引用只接受本应用缓存产物，避免导入外部 data: 大字符串把数据文件撑大
+    // 快捷方式的图标引用：只保留现行 iconcache 产物（file:// / icon: 短引用），
+    // 拒绝外部 data: 大字符串与历史占位串，避免脏数据把数据文件撑大
     out.shortcuts.forEach(x => {
-      if (typeof x.icon === 'string' && x.icon.indexOf('data:') === 0) x.icon = null;
+      if (isInlineIcon(x.icon)) x.icon = null;
     });
     return out;
   }

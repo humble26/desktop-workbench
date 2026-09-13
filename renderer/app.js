@@ -51,9 +51,11 @@ async function boot() {
   if (state._todoFilter == null) state._todoFilter = 'all';
   // 迁移：旧版本对 readShortcutLink 失败的 .lnk 会存下通用文档占位图标（体积很小），清除后按新逻辑重新获取；
   // 另外旧版本把图标以 base64 内联写进数据文件（几十个快捷方式能撑到几百 KB），
-  // 现在改为落盘到图标缓存、数据文件只存 file:// 短引用，故这里一次性清掉 data: 形式的内联图标。
+  // 现在改为落盘到图标缓存、数据文件只存 file:// 短引用。
+  // 清理判据统一走 proto.isInlineIcon：只清 data: 内联与历史占位串，
+  // 绝不动现行的 file:// / icon: 短引用（否则每次启动都会把图标清空再逐个重取）。
   (state.shortcuts || []).forEach(s => {
-    if (s.icon && (s.icon.length < 2500 || /^data:/i.test(s.icon))) s.icon = null;
+    if (proto.isInlineIcon(s.icon)) s.icon = null;
   });
   try {
     serverSnap = proto.snapshot(state);   // 建立差分基线（不含界面状态）

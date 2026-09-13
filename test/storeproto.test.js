@@ -144,3 +144,21 @@ test('脏数据不会进入集合（无 id 条目被忽略）', () => {
   const merged = proto.applyPatch({ todos: [] }, patch);
   assert.deepStrictEqual(merged.todos.map(t => t.id), ['a']);
 });
+
+test('isInlineIcon：data: 内联与历史占位应清空，现行 file:// / icon: 短引用必须保留', () => {
+  // 回归背景：app.js 曾用 `length < 2500` 单独判断，而现行 iconcache 引用只有
+  // 几十~一百多字符 —— 每次启动都会把全部合法图标清掉再逐个重新提取。
+  assert.strictEqual(proto.isInlineIcon('data:image/png;base64,AAAA'), true, 'base64 内联应清空');
+  assert.strictEqual(proto.isInlineIcon('C:\\legacy\\placeholder.png'), true, '无前缀的旧占位串应清空');
+  assert.strictEqual(proto.isInlineIcon('icon:../evil.png'), true, '格式非法的 icon: 串应清空');
+  assert.strictEqual(proto.isInlineIcon('x'.repeat(3000)), false, '超长未知串不动（避免误伤）');
+
+  assert.strictEqual(proto.isInlineIcon(''), false);
+  assert.strictEqual(proto.isInlineIcon(null), false);
+  assert.strictEqual(proto.isInlineIcon(undefined), false);
+  assert.strictEqual(proto.isInlineIcon(123), true, '非字符串图标值按脏数据处理（清空）');
+
+  const fileUrl = 'file:///C:/Users/wb/icons/' + 'a'.repeat(40) + '.png';
+  assert.strictEqual(proto.isInlineIcon(fileUrl), false, '现行 file:// 短引用必须保留');
+  assert.strictEqual(proto.isInlineIcon('icon:' + 'a'.repeat(40) + '.png'), false, '现行 icon: 短引用必须保留');
+});

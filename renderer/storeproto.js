@@ -39,6 +39,23 @@
     '_dailyRemindDate': 'dailyRemindOn'
   };
 
+  /* 图标字段的清理判据（渲染层启动清理与主进程归一化共用同一把尺子）：
+     · base64 内联 data:          → 旧实现，会撑大数据文件 → 清空；
+     · file:// URL                → 现行 iconcache 产物 → 保留；
+     · icon:<sha1>.png 短引用     → 现行 iconcache 引用（与 lib/iconcache.js 的
+                                    REF_RE 保持一致）→ 保留；格式不对的 icon: 串按脏数据清空；
+     · 其余长度 <2500 的字符串    → 历史占位图/脏数据 → 清空。
+     ⚠️ 不能只看长度：现行短引用只有几十~一百多字符，历史上 app.js 曾用
+     `length < 2500` 单独判断，导致每次启动把全部合法图标清掉再逐个重新提取。 */
+  function isInlineIcon(value) {
+    const s = String(value == null ? '' : value);
+    if (!s) return false;
+    if (/^data:/i.test(s)) return true;
+    if (/^file:/i.test(s)) return false;
+    if (/^icon:[0-9a-f]{8,64}\.png$/i.test(s)) return false;
+    return s.length < 2500;
+  }
+
   function isPlainObject(v) {
     return !!v && typeof v === 'object' && !Array.isArray(v);
   }
@@ -229,6 +246,7 @@
     COLLECTIONS: COLLECTIONS,
     EPHEMERAL_KEYS: EPHEMERAL_KEYS,
     RENAMED: RENAMED,
+    isInlineIcon: isInlineIcon,
     deepEqual: deepEqual,
     clone: clone,
     stripEphemeral: stripEphemeral,
