@@ -57,6 +57,15 @@ test('preload 监听的每个通道都确实由主进程发送', () => {
   assert.deepStrictEqual(missing, [], '主进程从未发送：' + missing.join(', '));
 });
 
+test('data:changed 的载荷必须转发给回调（app.js 靠 origin 区分「自己的提交」与「主进程写入」）', () => {
+  // 历史断点：preload 写成 () => cb()，载荷 {rev, origin} 被丢弃，app.js 的
+  // info.origin==='renderer' 分支永不命中 → 渲染层每次自己的保存也会全量回灌。
+  // 上面的通道名级校验测不出这种「载荷被丢」，这里对参数转发做静态断言。
+  const m = /onChanged:\s*\(cb\)\s*=>\s*ipcRenderer\.on\('data:changed',\s*\(_e,\s*([A-Za-z_$][\w$]*)\)\s*=>\s*cb\(([A-Za-z_$][\w$]*)\)/.exec(preloadSrc);
+  assert.ok(m, 'preload.onChanged 必须把 data:changed 载荷转发给回调');
+  assert.strictEqual(m[1], m[2], '载荷参数未原样转发');
+});
+
 test('渲染层调用的每个 api 方法都在 preload 白名单里', () => {
   const problems = [];
   for (const f of rendererFiles) {

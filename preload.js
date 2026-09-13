@@ -49,7 +49,8 @@ contextBridge.exposeInMainWorld('api', {
   onVisibility: (cb) => ipcRenderer.on('win:visibility', (_e, d) => cb(d)),
   onLayout: (cb) => ipcRenderer.on('win:layout', (_e, d) => cb(d)),
   onMaximized: (cb) => ipcRenderer.on('win:maximized', (_e, d) => cb(d)),
-  onChanged: (cb) => ipcRenderer.on('data:changed', () => cb()),
+  // 载荷 {rev, origin} 必须转发：渲染层靠 origin==='renderer' 跳过自己提交引发的回灌
+  onChanged: (cb) => ipcRenderer.on('data:changed', (_e, payload) => cb(payload)),
   pickAutoWatch: () => ipcRenderer.invoke('auto:pickWatch'),
   pickAutoTarget: () => ipcRenderer.invoke('auto:pickTarget'),
   runAutoOrganize: () => ipcRenderer.invoke('auto:run'),
