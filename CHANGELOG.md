@@ -4,7 +4,7 @@
 
 ## v1.9.0 —— 新增「AI 余额监测」
 
-> v1.8.7 的修复（广播链路补全、图标清理修正、失败可见化）此前**未单独发布**，一并包含在本版本里。
+> 本版本在已发布的 v1.8.7 之上新增 AI 余额监测，其余为随行的界面与测试加固（见文末「顺带修正」）。
 
 ### 新增：AI 平台余额与用量监测
 - **内置 5 个平台**：DeepSeek、OpenRouter、Moonshot / Kimi、硅基流动，外加「自定义平台」
@@ -31,11 +31,16 @@
 - 只允许 `https`（`http` 仅放行本机回环，自建中转常见于 localhost）；硬超时 + 响应体积上限；错误信息里不出现密钥
 - 本功能**默认关闭**；关闭时不产生任何相关网络请求。请求只发往对应平台的官方域名
 
-### 修复（沿用 v1.8.7，未单独发布）
-- preload 转发 `data:changed` 载荷；快捷方式图标不再每次启动被清空重取；
-  小组件关闭路径的重复广播；`pomoDone` 移出回灌 keep 列表；
-  主数据与全部备份均损坏时改名为 `workbench-data.json.corrupt-<时间戳>` 留存并通知；
-  usage / 剪贴板落盘失败记 `lastSaveError` 并进诊断页
+### 顺带修正（与 AI 功能同批改动，但不属于它）
+- `input[type=number]` / `input[type=password]` / `select` 此前**不在统一输入样式里**，
+  既没有边框也没有内边距（AI 监测的密钥与阈值输入框正好是这几类，顺手补齐）
+- `renderer/shell.js` 的视图分发改为 `await renderSettings(view)`：设置页是 async 函数，
+  不 await 的话它抛出的异常会逃逸成「测试结束之后的 unhandledRejection」，归因不到具体视图
+- `test/main-assembly.test.js` 的 app.asar 模拟改为**递归**复制：此前只拷一层，
+  `lib/ai/` 这类子目录不会进模拟包，导致「打包路径下 require 失败」，那是模拟失真而非应用问题
+- `test/contract.test.js` 的 lib 扫描改为**递归**：否则子目录会绕过「只有指定模块能直接写盘」的守卫
+- `tools/diagnose/verify-packed-boot.js` 新增 6 项打包产物校验：`lib/ai/*` 与 `view-ai.js`
+  在包内，且打包后**仍然**保留 `redirect: 'manual'`、平台地址白名单、安全存储检查与「估算」标注
 
 ### 防线与测试（`npm test` **234 项** + 真实 Electron 冒烟 **33 项** 全绿）
 - `test/ai-providers.test.js`（25 项）：五个平台的响应归一化（用真实响应形状）、金额清洗、
