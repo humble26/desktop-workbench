@@ -119,7 +119,12 @@ const aiProbe = [
   ['lib/ai/providers.js', /https:\/\/openrouter\.ai\/api\/v1\/key/, '内置平台地址白名单（OpenRouter）'],
   ['lib/ai/keystore.js', /isEncryptionAvailable/, '密钥保存前检查系统安全存储是否可用'],
   ['lib/ai/monitor.js', /ai-usage\.json|spreadSpend/, '余额差值推算消耗的实现'],
-  ['renderer/view-ai.js', /估算/, 'AI 页面上标注 token 是估算']
+  ['renderer/view-ai.js', /估算/, 'AI 页面上标注 token 是估算'],
+  // v1.9.1：文档承诺「功能关闭时不发任何请求」。这条承诺必须跟着产物一起发出去，
+  // 所以专门校验它在打包后仍然存在（源码里对、发出去的不对，正是这个项目踩过的坑）。
+  ['main.js', /reason:\s*'disabled'/, '主进程在总开关关闭时拒绝刷新（不发请求的承诺）'],
+  ['main.js', /aiSettings\(\)\.enabled === true/, '主进程仅在功能开启时才顺手验证密钥'],
+  ['preload.js', /verify:\s*verify === true/, 'preload 的 verify 默认不发请求（拿不准时不发才安全）']
 ];
 for (const [rel, re, label] of aiProbe) {
   const src = readEntry(rel);
