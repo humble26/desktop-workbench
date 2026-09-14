@@ -89,6 +89,12 @@ async function boot() {
     }
     if (state && state.view === 'settings') paintDiagnostics();
   });
+  // AI 余额刷新完成（手动点击或定时轮询）后回灌。
+  // 只在余额页重绘：设置页有正在输入的密钥/单价文本框，被后台刷新冲掉会很糟。
+  api.onAiUpdated && api.onAiUpdated((sum) => {
+    aiLastSummary = sum;
+    if (state && state.view === 'ai') render();
+  });
   // 主进程改写了数据（快速添加 / 逾期顺延 / 提醒标记 / 小组件开关）时回灌刷新；
   // 自己提交的补丁不再回灌，避免打断正在进行的操作
   api.onChanged && api.onChanged(async (info) => {

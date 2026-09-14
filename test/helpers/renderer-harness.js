@@ -188,7 +188,47 @@ function createRendererHarness(opts) {
     }),
     onChanged: () => {}, onDiagnostics: () => {}, onMode: () => {}, onLayout: () => {}, onMaximized: () => {},
     onVisibility: () => {}, onQuickReset: () => {}, onClipReset: () => {}, onClipUpdated: () => {},
-    onShotInit: () => {}, onShotResult: () => {}
+    onShotInit: () => {}, onShotResult: () => {}, onAiUpdated: () => {},
+    // AI 余额监测：默认给一份「已开启 + 一个正常平台」的快照，
+    // 这样常规路径就能覆盖到平台卡片、金额格式化与消耗柱状图，
+    // 而不是只渲染一个空状态（空状态另有 apiOverrides 用例覆盖）
+    aiList: () => Promise.resolve({
+      supported: true, enabled: true, intervalMinutes: 30, lowBalance: 0,
+      keyStorage: '测试替身', keyStorageAvailable: true,
+      refreshing: false, lastRefreshAt: Date.now() - 60000, lastRefreshError: null,
+      providers: [
+        {
+          id: 'deepseek', name: 'DeepSeek', custom: false, currency: 'CNY', enabled: true,
+          hasKey: true, masked: 'sk-****abcd', keyReadable: true, keyAt: Date.now() - 3600000,
+          ok: true, at: Date.now() - 60000, balance: 110.25, granted: 10, toppedUp: 100,
+          limit: null, used: null, available: true, note: '', error: '', price: 4,
+          spend: {
+            today: 1.5, yesterday: 2, last7: 9, last14: 15, avgPerDay: 1.286, observedDays: 7,
+            daysLeft: 85, tracked: 15, price: 4,
+            tokensToday: 375000, tokensLast7: 2250000, tokensTracked: 3750000
+          },
+          consoleUrl: 'https://platform.deepseek.com/usage',
+          keyUrl: 'https://platform.deepseek.com/api_keys',
+          keyHint: 'sk-…', priceNote: '测试用', url: '', balancePath: '', grantedPath: '', usedPath: ''
+        },
+        {
+          id: 'custom', name: '自定义平台', custom: true, currency: 'CNY', enabled: false,
+          hasKey: false, masked: '', keyReadable: false, keyAt: 0,
+          ok: false, at: 0, balance: null, granted: null, toppedUp: null, limit: null, used: null,
+          available: null, note: '', error: '', price: 0,
+          spend: {
+            today: 0, yesterday: 0, last7: 0, last14: 0, avgPerDay: 0, observedDays: 7,
+            daysLeft: null, tracked: 0, price: 0,
+            tokensToday: null, tokensLast7: null, tokensTracked: null
+          },
+          consoleUrl: '', keyUrl: '', keyHint: '', priceNote: '', url: '', balancePath: '', grantedPath: '', usedPath: ''
+        }
+      ]
+    }),
+    aiHistory: (opts) => Promise.resolve({
+      provider: (opts && opts.id) || 'deepseek', currency: 'CNY', price: 4,
+      days: [{ date: '2026-09-01', amount: 1 }, { date: '2026-09-02', amount: 2 }, { date: '2026-09-03', amount: 0 }]
+    })
   };
   const api = new Proxy(apiBase, { get(t, k) { return (k in t) ? t[k] : noop; }, has() { return true; } });
   // 允许测试覆盖个别 api 方法（例如让 load() 失败，验证界面会给出可见提示而不是空白）

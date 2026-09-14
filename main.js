@@ -1,6 +1,8 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, screen, nativeImage, Notification, nativeTheme, clipboard, powerMonitor, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, globalShortcut, screen, nativeImage, Notification, nativeTheme, clipboard, powerMonitor, desktopCapturer, safeStorage } = require('electron');
+// 别名：文件里多处局部解构过 net（检查更新），顶层这份供 AI 余额监测使用
+const electronNet = require('electron').net;
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -32,6 +34,11 @@ const { createUsageTracker } = require('./lib/usage-tracker.js');
 const { createIconCache } = require('./lib/iconcache.js');
 const { createRendererWatchdog } = require('./lib/renderer-watchdog.js');
 const { validatePatch } = require('./lib/patchguard.js');
+const { createKeyStore: createAiKeyStore } = require('./lib/ai/keystore.js');
+const { createHttpGet: createAiHttpGet } = require('./lib/ai/http.js');
+const { createAiMonitor } = require('./lib/ai/monitor.js');
+const aiSettingsDomain = require('./lib/ai/settings.js');
+const aiProviders = require('./lib/ai/providers.js');
 const proto = require('./renderer/storeproto.js');
 
 // ---------------------------------------------------------------------------
@@ -1059,6 +1066,56 @@ function main() {
   });
 
   // -----------------------------------------------------------
+  // AI 平台余额监测（默认关闭）
+  //   余额接口是各平台公开的；token 用量没有公开接口，因此用「余额差值」推算消耗
+  //   （见 lib/ai/monitor.js 顶部）。密钥用 safeStorage 加密单独存放，不进主数据。
+  // -----------------------------------------------------------
+  function aiSettings() {
+    return aiSettingsDomain.normalizeAiSettings(loadStore().settings && loadStore().settings.aiMonitor);
+  }
+
+  const aiKeyStore = createAiKeyStore({
+    filePath: () => path.join(app.getPath('userData'), 'ai-keys.json'),
+    safeStorage: safeStorage,
+    logE: logE
+  });
+
+  const aiHttpGet = createAiHttpGet({ net: electronNet, logE: logE });
+
+  const aiMonitor = createAiMonitor({
+    httpGet: aiHttpGet,
+    keyStore: aiKeyStore,
+    storePath: () => path.join(app.getPath('userData'), 'ai-usage.json'),
+    settings: aiSettings,
+    dateKey: dateKeyMain,
+    logE: logE,
+    onUpdate: (sum) => {
+      try { sendToRenderer('ai:updated', sum); } catch (e) { /* ignore */ }
+      notifyLowBalance();
+    }
+  });
+
+  // 余额低于阈值时提醒一次（同一天同一平台只提醒一次，避免每次轮询都弹）
+  const aiLowNotified = {};
+  function notifyLowBalance() {
+    let hits = [];
+    try { hits = aiMonitor.lowBalanceHits(); } catch (e) { return; }
+    const today = dateKeyMain();
+    for (const h of hits) {
+      if (aiLowNotified[h.id] === today) continue;
+      aiLowNotified[h.id] = today;
+      try {
+        if (!Notification.isSupported()) return;
+        new Notification({
+          title: h.name + ' 余额偏低',
+          body: '当前余额 ' + h.balance + ' ' + (h.currency || '') + '，低于你设置的提醒阈值',
+          silent: false
+        }).show();
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  // -----------------------------------------------------------
   // 截图 OCR 取字（Win+Alt+S）：全屏覆盖层框选 → 裁剪 → OCR → 自动复制
   // 覆盖层单窗口双状态：select（框选）/ result（识别结果）
   // -----------------------------------------------------------
@@ -1573,6 +1630,7 @@ function main() {
     }
     const r = store.commit(patch);
     usageTracker.reconcile();   // 时间统计开关等设置可能变化，立即自愈
+    aiMonitor.reconcile();      // AI 余额监测的开关 / 轮询间隔可能变化，同样自愈
     reconcileWidgets(); // 桌面小组件开关可能变化
     return r;
   });
@@ -1669,6 +1727,57 @@ function main() {
     if (!isTrustedSender(event)) return false;
     toggleClipboard();
     return true;
+  });
+
+  // ----- AI 平台余额监测 -----
+  // 渲染层只能「写密钥」和「读掩码」：明文密钥仅存在于主进程与请求头里。
+  ipcMain.handle('ai:list', (event) => {
+    if (!isTrustedSender(event)) return { supported: false, providers: [] };
+    return aiMonitor.summary();
+  });
+
+  ipcMain.handle('ai:refresh', async (event, ids) => {
+    if (!isTrustedSender(event)) return { ok: false, reason: 'forbidden' };
+    const list = Array.isArray(ids) ? ids.filter(x => typeof x === 'string').slice(0, 20) : null;
+    return aiMonitor.refresh(list);
+  });
+
+  ipcMain.handle('ai:setKey', (event, payload) => {
+    if (!isTrustedSender(event)) return { ok: false, error: 'forbidden' };
+    const id = payload && payload.id;
+    const key = payload && payload.key;
+    if (typeof id !== 'string' || typeof key !== 'string') return { ok: false, error: '参数不合法' };
+    if (!aiProviders.providerById(id)) return { ok: false, error: '未知平台' };
+    const r = aiKeyStore.set(id, key);
+    // 刚填完密钥就顺手验证一次，让「密钥是否可用」当场可见，而不是等到下次轮询
+    if (r.ok && payload && payload.verify === true) {
+      aiMonitor.refresh([String(id).toLowerCase()]).catch(e => logE('ai.setKey.verify', e));
+    }
+    return r;
+  });
+
+  ipcMain.handle('ai:clearKey', (event, id) => {
+    if (!isTrustedSender(event)) return { ok: false };
+    if (typeof id !== 'string') return { ok: false };
+    return aiKeyStore.remove(id);
+  });
+
+  ipcMain.handle('ai:history', (event, opts) => {
+    if (!isTrustedSender(event)) return { provider: '', currency: '', price: 0, days: [] };
+    const id = opts && opts.id;
+    if (typeof id !== 'string') return { provider: '', currency: '', price: 0, days: [] };
+    return aiMonitor.history(id, opts && opts.days);
+  });
+
+  ipcMain.handle('ai:clearHistory', (event) => {
+    if (!isTrustedSender(event)) return { ok: false };
+    return aiMonitor.clear();
+  });
+
+  ipcMain.handle('ai:clearProvider', (event, id) => {
+    if (!isTrustedSender(event)) return { ok: false };
+    if (typeof id !== 'string') return { ok: false };
+    return aiMonitor.clearProvider(id);
   });
 
   ipcMain.handle('auto:pickWatch', async (event) => {
@@ -2066,6 +2175,10 @@ function main() {
     // 桌面小组件：按设置开关启停
     reconcileWidgets();
 
+    // AI 余额监测：默认关闭；开启后按设置间隔轮询（密钥缺失的平台会自动跳过）
+    aiMonitor.load();
+    aiMonitor.reconcile();
+
     // 分辨率 / 缩放 / 显示器变化时，覆盖桌面模式重新铺满
     const handleDisplayChange = () => {
       if (isQuitting) return;
@@ -2106,6 +2219,7 @@ function main() {
 
   app.on('will-quit', () => {
     try { usageTracker.dispose(); } catch (e) { /* ignore */ } // 停采样进程并落盘时间统计增量
+    try { aiMonitor.dispose(); } catch (e) { /* ignore */ } // 停掉余额轮询定时器
     try { store.flush(); } catch (e) { /* ignore */ }   // 退出前把写合并窗口里的主数据落盘
     try { fs.rmSync(runningInfoPath(), { force: true }); } catch (e) { /* ignore */ }
     try { globalShortcut.unregisterAll(); } catch (e) { /* ignore */ }

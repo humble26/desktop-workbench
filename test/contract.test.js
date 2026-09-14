@@ -22,9 +22,22 @@ const RENDERER = path.join(ROOT, 'renderer');
 
 function read(p) { return fs.readFileSync(p, 'utf8'); }
 
+// 递归收集 lib 下的模块（lib/ai/ 是子目录）。用 '/' 分隔的相对路径作为标识，
+// 这样下面「哪些模块允许自己写盘」的白名单能精确到文件，
+// 而新增子目录也不会像以前那样被静默跳过（那会让守卫形同虚设）。
+function listLibFiles(dir, prefix) {
+  const out = [];
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? prefix + '/' + ent.name : ent.name;
+    if (ent.isDirectory()) out.push(...listLibFiles(path.join(dir, ent.name), rel));
+    else if (ent.name.endsWith('.js')) out.push(rel);
+  }
+  return out;
+}
+
 const preloadSrc = read(path.join(ROOT, 'preload.js'));
 const mainSrc = read(path.join(ROOT, 'main.js'));
-const libFiles = fs.readdirSync(path.join(ROOT, 'lib')).filter(f => f.endsWith('.js'));
+const libFiles = listLibFiles(path.join(ROOT, 'lib'), '');
 const backSrc = mainSrc + '\n' + libFiles.map(f => read(path.join(ROOT, 'lib', f))).join('\n');
 const rendererFiles = fs.readdirSync(RENDERER).filter(f => f.endsWith('.js'));
 
@@ -103,8 +116,24 @@ test('渲染层调用的每个 api 方法都在 preload 白名单里', () => {
   assert.deepStrictEqual(problems, [], '调用了未暴露的 API：' + problems.join(', '));
 });
 
-test('渲染层不再整份提交快照（旧 store:save 通道已移除）', () => {
-  assert.strictEqual(/ipcRenderer\.invoke\('store:save'/.test(preloadSrc), false, 'preload 仍暴露 store:save');
+/* AI 余额监测的密钥是「只写」的：渲染层能保存与清除，只能读到掩码。
+   这条边界只靠代码习惯维持不住，所以在这里做静态断言：
+     · ai:list 的 handler 里不得出现取明文的调用
+     · preload 不允许暴露任何「取密钥」的方法
+   真正的运行期防线是 lib/ai/keystore.js 自身的单测与 summary() 的形状测试。 */
+test('AI 密钥对渲染层只写不可读（ai:list 不得回传明文）', () => {
+  const listHandler = /ipcMain\.handle\('ai:list'[\s\S]*?\n  \}\);/.exec(mainSrc);
+  assert.ok(listHandler, '未能定位 ai:list 的 handler，正则可能已失效');
+  assert.strictEqual(/keyStore\.get\(|aiKeyStore\.get\(/.test(listHandler[0]), false,
+    'ai:list 的 handler 里出现了取明文密钥的调用 —— 那会把密钥送回渲染层');
+  // 明文只在发请求时被用到（ai:refresh 那条路径）
+  assert.strictEqual(/getKey\s*:|getSecret\s*:/.test(preloadSrc), false, 'preload 不应暴露取密钥的方法');
+  for (const m of ['aiSetKey', 'aiClearKey', 'aiList']) {
+    assert.ok(exposedApi.indexOf(m) !== -1, 'preload 未暴露 ' + m);
+  }
+});
+
+test('渲染层不再整份提交快照（旧 store:save 通道已移除）', () => {  assert.strictEqual(/ipcRenderer\.invoke\('store:save'/.test(preloadSrc), false, 'preload 仍暴露 store:save');
   assert.strictEqual(/ipcMain\.handle\('store:save'/.test(backSrc), false, '主进程仍注册 store:save');
   assert.strictEqual(/\bapi\.save\s*\(/.test(rendererFiles.map(f => read(path.join(RENDERER, f))).join('\n')), false, '渲染层仍调用 api.save');
   for (const ch of ['store:load', 'store:commit']) {
@@ -184,9 +213,12 @@ test('独立小窗脚本仍然自成体系（各自 IIFE，不与主页共享作
 test('主数据文件只能由 lib/store.js 写入（其他模块各自管理自己的数据源）', () => {
   // 允许自带落盘的模块：store.js 管主数据，iconcache.js 管图标缓存目录，
   // renderer-watchdog.js 只写启动日志（用于把「白屏」变成可读的失败原因），
-  // usage-tracker.js 管自己的 usage-data.json（时间统计明细）。
+  // usage-tracker.js 管自己的 usage-data.json（时间统计明细），
+  // ai/monitor.js 管 ai-usage.json（余额采样与消耗），
+  // ai/keystore.js 管 ai-keys.json（加密后的密钥）。
   // 但它们都不允许碰 workbench-data.json —— 那个文件名只出现在 main.js 传给 store 的参数里。
-  const selfOwned = ['store.js', 'iconcache.js', 'renderer-watchdog.js', 'usage-tracker.js'];
+  const selfOwned = ['store.js', 'iconcache.js', 'renderer-watchdog.js', 'usage-tracker.js',
+    'ai/monitor.js', 'ai/keystore.js'];
   const writers = libFiles.filter(f => selfOwned.indexOf(f) === -1)
     .filter(f => /writeFileSync|renameSync|unlinkSync/.test(read(path.join(ROOT, 'lib', f))));
   assert.deepStrictEqual(writers, [], '这些模块不应直接写文件：' + writers.join(', '));

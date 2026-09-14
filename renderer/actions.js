@@ -183,6 +183,129 @@ $('#view').addEventListener('click', async (e) => {
       try { await api.clearUsage(); toast('统计数据已清空'); } catch (e) { toast('清空失败'); }
       break;
     }
+
+    // ----- AI 余额监测 -----
+    case 'ai-toggle': {
+      aiMutate(d => { d.enabled = !(d.enabled === true); });
+      await save();
+      if (state.settings.aiMonitor.enabled === true) {
+        // 打开后立刻拉一次：让用户当场知道密钥对不对，而不是等一个轮询周期
+        try { aiLastSummary = await api.aiList(); } catch (e) { /* ignore */ }
+        toast('已开启，正在读取余额…');
+        api.aiRefresh().then(r => { if (r && r.summary) aiLastSummary = r.summary; }).catch(() => { /* 错误会显示在页面上 */ });
+      }
+      render(); break;
+    }
+    case 'ai-toggle-provider': {
+      const pid = t.dataset.id;
+      if (!pid) break;
+      aiMutate(d => {
+        const c = d.providers[pid] = d.providers[pid] || {};
+        c.enabled = !(c.enabled === true);
+      });
+      await save();
+      await aiReloadSummary();
+      render(); break;
+    }
+    case 'ai-interval': {
+      const v = parseInt(t.dataset.value, 10);
+      aiMutate(d => { d.intervalMinutes = v >= 5 ? v : 30; });
+      await save(); render(); break;
+    }
+    case 'ai-refresh': {
+      const pid = t.dataset.id || null;
+      toast(pid ? '正在刷新…' : '正在刷新全部平台…');
+      try {
+        const r = await api.aiRefresh(pid ? [pid] : null);
+        if (r && r.summary) aiLastSummary = r.summary;
+        const bad = pid ? (r && r.summary ? r.summary.providers.find(x => x.id === pid) : null) : null;
+        if (bad && bad.ok === false) toast('刷新失败：' + (bad.error || '未知原因'));
+        else if (!pid && r && r.refreshed === 0) toast('没有可刷新的平台：先开启监测并填写密钥');
+      } catch (e) { toast('刷新失败：' + ((e && e.message) || e)); }
+      render(); break;
+    }
+    case 'ai-save-key': {
+      const pid = t.dataset.id;
+      const input = $('#aiKey-' + pid);
+      const val = input ? String(input.value || '').trim() : '';
+      if (!pid) break;
+      if (!val) { toast('请先粘贴 API Key'); break; }
+      let r = null;
+      try { r = await api.aiSetKey(pid, val); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+      if (r && r.ok) {
+        if (input) input.value = '';                       // 明文不留在界面上
+        toast('密钥已加密保存，正在验证…');
+        await aiReloadSummary();
+      } else {
+        toast('保存失败：' + ((r && r.error) || '未知原因'));
+      }
+      render(); break;
+    }
+    case 'ai-clear-key': {
+      const pid = t.dataset.id;
+      if (!pid) break;
+      try { await api.aiClearKey(pid); toast('已清除密钥'); } catch (e) { toast('清除失败'); }
+      await aiReloadSummary();
+      render(); break;
+    }
+    case 'ai-clear-provider': {
+      const pid = t.dataset.id;
+      if (!pid) break;
+      try { await api.aiClearProvider(pid); toast('已清空该平台历史'); } catch (e) { toast('清空失败'); }
+      await aiReloadSummary();
+      render(); break;
+    }
+    case 'ai-clear-history': {
+      if (!(await aiClearConfirm())) break;
+      try { await api.aiClearHistory(); await aiReloadSummary(); toast('监测历史已清空'); } catch (e) { toast('清空失败'); }
+      render(); break;
+    }
+    case 'ai-save-custom': {
+      const name = ($('#aiCustomName') || {}).value || '';
+      const url = (($('#aiCustomUrl') || {}).value || '').trim();
+      const path = (($('#aiCustomPath') || {}).value || '').trim();
+      const currency = ($('#aiCustomCurrency') || {}).value || 'CNY';
+      const keyInput = $('#aiKey-custom');
+      const keyVal = keyInput ? String(keyInput.value || '').trim() : '';
+      if (url && !/^https:\/\//i.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\//i.test(url)) {
+        toast('地址必须是 https（本机 http 除外）'); break;
+      }
+      if (url && !path) { toast('请填写余额字段路径，例如 data.balance'); break; }
+      aiMutate(d => {
+        const c = d.providers.custom = d.providers.custom || {};
+        c.name = String(name).slice(0, 40);
+        c.url = url;
+        c.balancePath = path;
+        c.currency = currency === 'USD' ? 'USD' : 'CNY';
+      });
+      if (keyVal) {
+        let kr = null;
+        try { kr = await api.aiSetKey('custom', keyVal); } catch (e) { kr = { ok: false, error: (e && e.message) || String(e) }; }
+        if (!(kr && kr.ok)) { toast('密钥保存失败：' + ((kr && kr.error) || '未知原因')); break; }
+        if (keyInput) keyInput.value = '';
+      }
+      await save();
+      const cfg = state.settings.aiMonitor.providers.custom;
+      if (cfg.enabled === true) {
+        toast('已保存，正在读取…');
+        try { const r = await api.aiRefresh(['custom']); if (r && r.summary) aiLastSummary = r.summary; } catch (e) { /* ignore */ }
+      } else {
+        toast('已保存（该平台尚未开启）');
+      }
+      await aiReloadSummary();
+      render(); break;
+    }
+    case 'ai-open-console':
+    case 'ai-open-url': {
+      const pid = t.dataset.id;
+      let url = t.dataset.url || '';
+      if (!url && pid && aiLastSummary) {
+        const p = aiLastSummary.providers.find(x => x.id === pid);
+        url = (p && p.consoleUrl) || '';
+      }
+      if (url) api.openExternal(url);
+      break;
+    }
     case 'goto-settings': state.view = 'settings'; render(); break;
     case 'toggle-widget-clock':
     case 'toggle-widget-todos':

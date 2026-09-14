@@ -2,7 +2,7 @@
 
 一个集成 **待办 / 便签 / 打卡 / 番茄钟 / 剪贴板历史 / 截图 OCR / 时间统计 / 文件自动整理 / 桌面小组件** 的 Windows 桌面效率应用。基于 Electron，界面简约，**数据全部本地存储、不联网**。
 
-> 当前版本：**v1.8.7** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
+> 当前版本：**v1.9.0** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
 
 > ⚠️ **如果你装的是 v1.8.2 / v1.8.3 / v1.8.4 / v1.8.5：请直接改用 v1.8.6。**
 > 这些版本启动后界面是空白的（侧栏品牌可见，但导航、首页、窗口按钮全空）。根因是 `renderer/core.js` 顶层的 `const api = window.api;` —— preload 通过 `contextBridge` 暴露的 `window.api` 是**不可配置**属性，脚本顶层的 `const` 与它同名会直接抛 `SyntaxError`，导致整个 `core.js` 及其后所有脚本失效；该问题自 v1.8.2 把 `app.js` 拆成多脚本时引入。详见 [更新日志](CHANGELOG.md)。
@@ -26,6 +26,7 @@
 | 📦 桌面小组件 | 时钟 / 今日待办 / 便签可固定为桌面小窗 |
 | 🧭 命令面板（Ctrl+K） | 搜索内容之外可直接执行动作：新建待办/便签、打开剪贴板、截图、开始番茄钟、切换置顶/主题、立即备份 |
 | 🩺 运行环境诊断 | 设置页集中展示 PowerShell 环境、数据仓库状态、快捷键注册结果、降级中的功能 |
+| 💰 AI 余额监测 | 定期读取各平台**官方余额接口**（DeepSeek / OpenRouter / Moonshot / 硅基流动 + 自定义），并用**余额差值推算消耗**、按参考单价估算 token 量级与预计可用天数。密钥用系统级加密单独保存，默认关闭 |
 | 🚑 启动自诊断 | 启动失败时弹原生对话框并写 `%APPDATA%\桌面工作台\startup.log`；单实例 / 旧版本冲突会明确提示 |
 
 **快捷键**：`Win+Alt+Space` 显示/隐藏 · `Win+Alt+V` 剪贴板历史 · `Win+Alt+S` 截图取字 · `Win+Alt+T` 全局快速添加 · `Ctrl+K` 命令面板
@@ -49,6 +50,8 @@
 | 自动备份（保留最近 12 份） | `backups/workbench-*.json` | ✅ 参与 |
 | 时间统计 | `usage-data.json`（自动保留 90 天） | ❌ 不参与，可单独清空 |
 | 剪贴板历史 | `clipboard-history.json` + `clipboard/*.png` | ❌ 不参与，可单独清空 |
+| AI 余额采样与消耗 | `ai-usage.json`（自动保留 400 天） | ❌ 不参与，可单独清空 |
+| **AI 平台 API Key** | `ai-keys.json`（**系统级加密后**保存） | ❌ 不参与（刻意隔离，避免随导出 / 备份外流） |
 | 图标缓存 | `icons/*.png`（启动时清理未引用项） | ❌ 不参与 |
 | 桌面小组件位置 | `widget-positions.json` | ❌ 不参与 |
 | 启动日志（排查用） | `startup.log` | ❌ 不参与 |
@@ -76,6 +79,13 @@ desktop-workbench/
 │   ├── powershell.js       #   PowerShell 能力探测（含 pwsh 回退）与统一调用
 │   ├── quickadd.js         #   「明天 15:30 开会」这类中文日期时间解析
 │   ├── usage.js            #   时间统计：分类规则、时长累计、汇总
+│   ├── usage-tracker.js    #   时间统计采集器（采样进程 / 落盘 / 保留策略）
+│   ├── ai/                 #   AI 余额监测（v1.9.0）
+│   │   ├── providers.js    #     平台注册表与响应归一化（请求地址写死在此，纯函数）
+│   │   ├── settings.js     #     设置归一化（defaults / migrate / main 共用一份实现）
+│   │   ├── http.js         #     取 JSON：只走 https、不跟随跳转、超时与体积上限
+│   │   ├── keystore.js     #     密钥加密存储（safeStorage，独立文件、只写不可读）
+│   │   └── monitor.js      #     轮询、余额差值推算消耗、历史与预测
 │   ├── iconcache.js        #   图标落盘缓存（替代内联 base64）
 │   └── sensitive.js        #   敏感内容识别（JWT / 私钥 / 口令 / API Key）
 ├── renderer/               # 渲染进程（无构建步骤，普通 <script> 顺序加载）
@@ -85,11 +95,11 @@ desktop-workbench/
 │   ├── importguard.js      #   导入数据守卫（UMD）
 │   ├── errortrap.js        #   错误兜底（最先加载，不依赖任何脚本）
 │   ├── core.js icons.js shell.js app.js
-│   ├── view-*.js           #   11 个视图：首页/快捷入口/文件整理/待办/日历/便签/打卡/番茄钟/数据洞察/时间统计/设置
+│   ├── view-*.js           #   12 个视图：首页/快捷入口/文件整理/待办/日历/便签/打卡/番茄钟/数据洞察/时间统计/AI 余额/设置
 │   ├── dialogs.js search.js diagnostics.js actions.js guide.js
 │   ├── style.css           #   设计令牌 + 深色主题（同一套令牌给两套值）
 │   └── clipboard.* quickadd.* shot.* widget.*   # 四个独立小窗
-├── test/                   # 141 项回归测试（node:test，无需 Electron）
+├── test/                   # 234 项回归测试（node:test，无需 Electron）
 ├── tools/                  # 开发工具：语法检查、诊断、拆分与打包校验
 ├── ocr-data/               # 离线 OCR 语言模型（chi_sim + eng）
 ├── build/                  # 应用图标
@@ -105,6 +115,9 @@ desktop-workbench/
 - **错误兜底必须最先加载且不依赖其它脚本**（`renderer/errortrap.js`）：否则「兜底代码所在的文件」一旦挂掉，故障就没有任何提示 —— 这正是空白界面的另一半原因。
 - **所有渲染层脚本与页面同目录**：页面 CSP 是 `script-src 'self'`，`file://` 下跨目录脚本能否命中 `'self'` 并不可靠，因此不使用子目录。
 - **进程边界有契约测试**：preload 暴露的 API ↔ 渲染层调用、IPC 通道 ↔ 主进程 handler、页面脚本清单 ↔ 实际文件，全部静态校验。
+- ⚠️ **网络只发往各平台官方域名，且不跟随跳转**（v1.9.0）：内置平台（DeepSeek / OpenRouter / Moonshot / 硅基流动）的请求地址**写死在 `lib/ai/providers.js` 里，不接受来自设置的覆盖** —— 设置是可以由渲染层提交的，若允许改地址，一个被污染的渲染层就能把 API Key 转发到任意域名。需要走中转站时请用「自定义平台」单独填地址与它专属的密钥。请求一律 `redirect: 'manual'`：跟随 302 会把 `Authorization` 头带到跳转目标域，等于把密钥送给第三方。由 `test/ai-providers.test.js` 与 `test/ai-http.test.js` 守住。
+- 🔐 **API Key 对渲染层「只写不可读」**（v1.9.0）：密钥用 `safeStorage`（Windows 下由 DPAPI 保护）加密后存进独立的 `ai-keys.json`，与主数据、导出、备份完全隔离；`ai:list` 只回传掩码，明文仅在主进程发请求时被取用。安全存储不可用时**拒绝保存**而不是退回明文。由 `test/ai-keystore.test.js`、`test/ai-http.test.js` 与 `test/contract.test.js` 的静态断言守住。
+- 🧮 **消耗是算出来的，不是问来的**（v1.9.0）：各平台只公开余额、没有公开的 token 用量接口，因此消耗由**余额差值**推算（余额上升视为充值，不计负消耗），跨天时均摊到相隔的每一天；token 数再由「消耗 ÷ 参考单价」换算成量级，界面上明确标注为**估算**。这段算法单独成 `lib/ai/monitor.js` 并有 27 项单测；`reconcile()` 还做了**节流**：每一次数据保存都会调用它，但只有「刚打开」或「距上次刷新超过 1 分钟」才会真的再打一次接口，轮询间隔没变也不重建定时器 —— 免得切个主题就等于骚扰一次平台服务器。
 
 ---
 
@@ -114,18 +127,19 @@ desktop-workbench/
 npm install            # 安装依赖（node_modules 不进入版本库）
 npm start              # 本地运行
 
-npm test               # 141 项回归测试（无需图形环境）
-npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏，20 项断言）
+npm test               # 234 项回归测试（无需图形环境）
+npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏，33 项断言）
 npm run check          # 语法检查（遍历所有 JS）
 npm run dist           # 生成 Windows 安装包（产物在 dist\）
 ```
 
 **测试覆盖的关键点**（都是踩过的坑）：
 
-- `test/renderer-boot.test.js` —— 无浏览器环境下按 `index.html` 顺序把 24 个脚本加载进共享作用域，断言 `boot()` 能自行完成、11 个视图（含空状态分支）都能渲染、数据确实进入视图、且无 `console.error`
+- `test/renderer-boot.test.js` —— 无浏览器环境下按 `index.html` 顺序把 25 个脚本加载进共享作用域，断言 `boot()` 能自行完成、12 个视图（含空状态分支）都能渲染、数据确实进入视图、且无 `console.error`
 - `test/helpers/renderer-harness.js` —— 元素桩只实现渲染层真正用到的 DOM，缺什么就显式报错而不是静默返回 `undefined`；**视图测试必须 `await render()`**，否则异步视图里同步抛出的异常会逃逸成测试结束之后的 `unhandledRejection`（测试全绿、退出码却是 1）
 - `test/main-assembly.test.js` —— 用替身 Electron 加载真实 `main.js`；并在名为 `app.asar` 的目录里以「框架实例不同」的形态调用真实 IPC
 - `test/contract.test.js` / `test/text-integrity.test.js` —— 进程边界契约、**渲染层顶层声明不得与 preload 注入的全局同名**（v1.8.2~v1.8.5 白屏的根因）、文本编码完整性
+- `test/ai-*.test.js` —— AI 余额监测的 83 项：平台响应归一化与地址白名单、密钥**不明文落盘且不回传渲染层**、余额差值推算（充值 / 跨天 / 换币种 / 失败）、`redirect: 'manual'` 与错误信息不含密钥、设置归一化的幂等与未知字段保留
 
 > 若你的环境设置了 `ELECTRON_RUN_AS_NODE`（某些自动化/沙箱环境会预设），Electron 会被强制成 Node 模式、
 > 无法创建窗口。跑 `npm run test:smoke` 前先清除它：
@@ -182,7 +196,7 @@ npm audit --registry=https://registry.npmjs.org
   - `core.js` 不再声明 `api`（裸写的 `api` 解析到 `window.api`），`boot()` 显式检查 `window.api`
 - **新增 `renderer/errortrap.js`**：致命错误面板与全局错误处理移到**最先加载、不依赖任何脚本**的文件 —— 兜底代码不能和它要报告的故障放在同一个文件里（这正是此前「白屏却毫无提示」的原因）
 - 新增守卫测试：渲染层顶层声明不得与 preload 注入的全局同名（把 `const api` 加回去会立刻失败）、错误兜底脚本必须最先加载
-- **`npm run test:smoke` 现在可真正运行**：真实 Electron 加载真实页面，20 项断言全部通过
+- **`npm run test:smoke` 现在可真正运行**：真实 Electron 加载真实页面，33 项断言全部通过
 
 ### v1.8.5
 - **启动失败自诊断**：渲染层看门狗（原生错误对话框 + `%APPDATA%\桌面工作台\startup.log`）、启动阶段打点（`app-loaded → boot-started → data-loaded → rendered`）、单实例版本冲突提示（这次的根因正是靠它写下的日志定位的）

@@ -71,7 +71,7 @@ function readDisk() {
 function registerIpc() {
   ipcMain.handle('store:load', () => ({ rev: store.getRev(), data: store.read() }));
   ipcMain.handle('store:commit', (event, payload) => store.commit(payload && payload.patch));
-  ipcMain.handle('app:info', () => ({ version: '1.8.2-smoke', platform: process.platform, userData: tmpDir, hotkey: 'Win+Alt+Space' }));
+  ipcMain.handle('app:info', () => ({ version: '1.9.0-smoke', platform: process.platform, userData: tmpDir, hotkey: 'Win+Alt+Space' }));
   ipcMain.handle('data:listBackups', () => store.listBackups());
   ipcMain.handle('usage:getSummary', () => ({
     supported: true, enabled: false, dayCount: 0,
@@ -83,7 +83,7 @@ function registerIpc() {
   // 此前缺 app:diagnostics 桩，每次冒烟都打印 2 条「No handler registered」，
   // 会稀释真实故障信号（审查 R6）。
   const smokeDiagnostics = {
-    version: '1.8.2-smoke', platform: process.platform, userData: tmpDir, hotkey: 'Win+Alt+Space',
+    version: '1.9.0-smoke', platform: process.platform, userData: tmpDir, hotkey: 'Win+Alt+Space',
     powershell: { platform: process.platform, checked: true, available: false, reason: 'smoke-stub', features: {} },
     store: store.diagnostics(),
     usage: { enabled: false, sampling: false, paused: false, lastSaveError: null },
@@ -107,6 +107,50 @@ function registerIpc() {
     'shot:start': true, 'shot:ready': true, 'shot:submitCrop': { ok: false }, 'shot:cancel': true,
     'shot:copy': true, 'shot:close': true, 'widgets:close': true, 'widgets:openMain': true
   };
+  // AI 余额监测：给一份「已开启 + 一个正常平台」的快照，让真实页面把
+  // 平台卡片、金额格式与消耗柱状图都真的渲染一遍（本测试不发起任何网络请求）
+  const aiSummary = {
+    supported: true, enabled: true, intervalMinutes: 30, lowBalance: 0,
+    keyStorage: '冒烟替身', keyStorageAvailable: true,
+    refreshing: false, lastRefreshAt: Date.now(), lastRefreshError: null,
+    providers: [{
+      id: 'deepseek', name: 'DeepSeek', custom: false, currency: 'CNY', enabled: true,
+      hasKey: true, masked: 'sk-****smoke', keyReadable: true, keyAt: Date.now(),
+      ok: true, at: Date.now(), balance: 110.25, granted: 10, toppedUp: 100,
+      limit: null, used: null, available: true, note: '', error: '', price: 4,
+      spend: {
+        today: 1.5, yesterday: 2, last7: 9, last14: 15, avgPerDay: 1.286, observedDays: 7,
+        daysLeft: 85, tracked: 15, price: 4,
+        tokensToday: 375000, tokensLast7: 2250000, tokensTracked: 3750000
+      },
+      consoleUrl: 'https://platform.deepseek.com/usage',
+      keyUrl: 'https://platform.deepseek.com/api_keys',
+      keyHint: 'sk-…', priceNote: '冒烟', url: '', balancePath: '', grantedPath: '', usedPath: ''
+    }, {
+      id: 'custom', name: '自定义平台', custom: true, currency: 'CNY', enabled: false,
+      hasKey: false, masked: '', keyReadable: false, keyAt: 0,
+      ok: false, at: 0, balance: null, granted: null, toppedUp: null, limit: null, used: null,
+      available: null, note: '', error: '', price: 0,
+      spend: {
+        today: 0, yesterday: 0, last7: 0, last14: 0, avgPerDay: 0, observedDays: 7,
+        daysLeft: null, tracked: 0, price: 0,
+        tokensToday: null, tokensLast7: null, tokensTracked: null
+      },
+      consoleUrl: '', keyUrl: '', keyHint: '', priceNote: '', url: '', balancePath: '', grantedPath: '', usedPath: ''
+    }]
+  };
+  Object.assign(benign, {
+    'ai:list': aiSummary,
+    'ai:refresh': { ok: true, refreshed: 1, summary: aiSummary },
+    'ai:history': {
+      provider: 'deepseek', currency: 'CNY', price: 4,
+      days: [{ date: '2026-09-08', amount: 1 }, { date: '2026-09-09', amount: 2 }, { date: '2026-09-10', amount: 3 }]
+    },
+    'ai:setKey': { ok: true, masked: 'sk-****moke' },
+    'ai:clearKey': { ok: true },
+    'ai:clearHistory': { ok: true },
+    'ai:clearProvider': { ok: true }
+  });
   for (const ch of Object.keys(benign)) ipcMain.handle(ch, () => benign[ch]);
 }
 
@@ -134,10 +178,10 @@ async function main() {
 
   // ---- 1. 页面与脚本装载 ----
   check('CSP 放行页面脚本（storeproto.js 等同目录脚本均已加载）', await js('!!(window.WB && window.WB.proto && window.WB.proto.diffPatch)'));
-  check('侧栏 11 个导航项已渲染（boot 完成）', (await js('document.querySelectorAll("#nav .navi").length')) === 11,
+  check('侧栏 12 个导航项已渲染（boot 完成）', (await js('document.querySelectorAll("#nav .navi").length')) === 12,
     '实际 ' + (await js('document.querySelectorAll("#nav .navi").length')));
   check('首页仪表盘已渲染', (await js('!!document.querySelector(".greet") && !!document.querySelector(".stats")')));
-  check('版本号已从主进程取回', (await js('(document.getElementById("ver")||{}).textContent || ""')).includes('1.8.2-smoke'));
+  check('版本号已从主进程取回', (await js('(document.getElementById("ver")||{}).textContent || ""')).includes('1.9.0-smoke'));
   check('渲染层没有 error 级控制台输出', consoleErrors.length === 0, consoleErrors.join(' | '));
 
   // ---- 2. 界面状态不落盘 ----
@@ -190,7 +234,38 @@ async function main() {
   check('设置改动已落盘（主题切深色）', disk.settings.theme === 'dark', 'theme=' + disk.settings.theme);
   check('未知设置键被保留', disk.settings.clipboardSensitive === true);
 
-  // ---- 6. 隐藏的 write 合并：文件始终是合法 JSON ----
+  // ---- 6. AI 余额监测：真实 preload → 真实 IPC → 真实页面渲染 ----
+  // 这一段只验证「链路通、页面能画、开关能存」，不发起任何网络请求（更不做真实取数）
+  await js('document.querySelector(\'[data-nav="ai"]\').click()');
+  await sleep(300);
+  check('AI 余额页可切换并渲染', await js('!!document.querySelector(".ai-card")'));
+  check('AI 页显示余额与平台名', await js('(document.getElementById("view").innerHTML || "").indexOf("110.25") !== -1'));
+  check('AI 页显示密钥掩码而不是明文', await js('(document.getElementById("view").innerHTML || "").indexOf("sk-****smoke") !== -1'));
+  check('AI 页标注了 token 是估算', await js('(document.getElementById("view").innerHTML || "").indexOf("估算") !== -1'));
+  check('AI 页渲染了消耗柱状图', await js('document.querySelectorAll("#view .u-col").length >= 3'),
+    '实际 ' + (await js('document.querySelectorAll("#view .u-col").length')));
+
+  // 设置页：默认关闭 → 打开 → 密钥区块展开并落盘
+  await js('document.querySelector(\'[data-nav="settings"]\').click()');
+  await sleep(300);
+  check('设置页出现 AI 监测区块', await js('!!document.querySelector(\'.set-group-t\') && (document.getElementById("view").innerHTML || "").indexOf("AI 余额监测") !== -1'));
+  check('未开启时不显示调优项（轮询间隔 / 低余额提醒）', !(await js('!!document.querySelector(\'[data-act="ai-interval"]\')')));
+  check('未开启也可以先填密钥（密钥行不随总开关收起）', await js('!!document.getElementById("aiKey-deepseek")'));
+  await js(`(() => {
+    const sw = Array.from(document.querySelectorAll('.set-row .switch')).find(x => x.dataset.act === 'ai-toggle');
+    if (sw) sw.click();
+  })()`);
+  await sleep(500);
+  check('打开开关后出现轮询间隔设置', await js('!!document.querySelector(\'[data-act="ai-interval"]\')'));
+  check('打开开关后显示密钥存储后端', await js('(document.getElementById("view").innerHTML || "").indexOf("冒烟替身") !== -1'));
+  disk = readDisk();
+  check('AI 监测开关已通过补丁协议落盘', disk.settings.aiMonitor && disk.settings.aiMonitor.enabled === true,
+    JSON.stringify(disk.settings.aiMonitor && disk.settings.aiMonitor.enabled));
+  check('落盘时补齐了各平台默认配置', !!(disk.settings.aiMonitor && disk.settings.aiMonitor.providers
+    && disk.settings.aiMonitor.providers.deepseek), JSON.stringify(Object.keys((disk.settings.aiMonitor || {}).providers || {})));
+  check('设置页 AI 区块不含明文密钥', await js('(document.getElementById("view").innerHTML || "").indexOf("sk-****smoke") !== -1'));
+
+  // ---- 7. 隐藏的 write 合并：文件始终是合法 JSON ----
   check('数据文件始终是合法 JSON', (() => { try { JSON.parse(fs.readFileSync(storeFile, 'utf8')); return true; } catch (e) { return false; } })());
   check('没有遗留 .tmp 临时文件', !fs.existsSync(storeFile + '.tmp'));
 

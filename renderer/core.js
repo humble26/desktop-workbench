@@ -46,6 +46,7 @@ const NAV = [
   { id: 'pomodoro', icon: 'timer', label: '番茄钟' },
   { id: 'stats', icon: 'bar', label: '数据洞察' },
   { id: 'usage', icon: 'clock', label: '时间统计' },
+  { id: 'ai', icon: 'coins', label: 'AI 余额' },
   { id: 'settings', icon: 'settings', label: '设置' }
 ];
 

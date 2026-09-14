@@ -34,7 +34,8 @@ async function render() {
   else if (id === 'pomodoro') renderPomodoro(view);
   else if (id === 'stats') await renderStats(view);
   else if (id === 'usage') await renderUsage(view);
-  else if (id === 'settings') renderSettings(view);
+  else if (id === 'ai') await renderAi(view);
+  else if (id === 'settings') await renderSettings(view);
   syncPin();
   syncGlass();
 }

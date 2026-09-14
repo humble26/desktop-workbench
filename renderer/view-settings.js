@@ -15,6 +15,9 @@ async function renderSettings(v) {
   const ws = state.settings.widgets || {};
   let info = { version: '1.0.0', hotkey: 'Win+Alt+Space' };
   try { info = await api.appInfo(); } catch (e) { /* ignore */ }
+  // AI 监测区块要显示各平台的密钥掩码与最近一次读取结果，渲染前先取一份
+  // （只是主进程内的缓存快照，不会触发任何网络请求）
+  try { aiLastSummary = await api.aiList(); } catch (e) { /* 保留旧快照 */ }
 
   const sw = (act, on) => `<div class="switch ${on ? 'on' : ''}" data-act="${act}"></div>`;
   const ctl = (html) => `<div class="set-ctl">${html}</div>`;
@@ -102,6 +105,7 @@ async function renderSettings(v) {
         </div>`)}
       ${row('trash', 'danger', '清空统计数据', '删除全部应用时长记录（不影响待办、便签等其他数据，也不包含在导出/备份中）', ctl(`<button class="btn danger sm" data-act="clear-usage">清空</button>`))}
     `)}
+    ${aiMonitorSettingsGroup()}
     ${group('桌面小组件', `
       ${row('clock', 'c3', '时钟', '在桌面固定显示时间与日期的小窗', sw('toggle-widget-clock', ws.clock === true))}
       ${row('check-square', 'c1', '今日待办', '在桌面固定显示今天与逾期的待办', sw('toggle-widget-todos', ws.todos === true))}
@@ -151,6 +155,7 @@ async function renderSettings(v) {
     const bi = $('#bkInfo');
     if (bi) bi.textContent = bks.length ? `最近 ${bks.length} 份 · 最新 ${esc(bks[0].name)}` : '暂无本地备份';
   } catch (e) { /* ignore */ }
+  wireAiSettingsInputs();
   paintDiagnostics();
 }
 

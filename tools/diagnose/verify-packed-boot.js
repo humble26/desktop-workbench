@@ -98,6 +98,36 @@ else {
   if (identity || !hasGetUrlFallback) failed++;
 }
 
+// 5) AI 余额监测：包内模块齐备，且**安全关键的那几行原样进包**
+//    （打包环节若把注释/代码搞丢，防的是「源码里是对的、发出去的不对」）
+function readEntry(rel) {
+  const node = find(index, '', rel);
+  if (!node) return null;
+  const buf = Buffer.alloc(node.size);
+  fs.readSync(fd, buf, 0, node.size, baseOffset + parseInt(node.offset, 10));
+  return buf.toString('utf8');
+}
+for (const f of ['lib/ai/providers.js', 'lib/ai/settings.js', 'lib/ai/http.js', 'lib/ai/keystore.js', 'lib/ai/monitor.js', 'renderer/view-ai.js']) {
+  const ok = !!find(index, '', f);
+  console.log((ok ? 'OK  ' : '✖   ') + '包内包含 ' + f);
+  if (!ok) failed++;
+}
+
+const aiProbe = [
+  ['lib/ai/http.js', /redirect:\s*'manual'/, '取 JSON 时设置 redirect: manual（不跟随跳转，防止密钥被带到别的域名）'],
+  ['lib/ai/providers.js', /https:\/\/api\.deepseek\.com\/user\/balance/, '内置平台地址白名单（DeepSeek）'],
+  ['lib/ai/providers.js', /https:\/\/openrouter\.ai\/api\/v1\/key/, '内置平台地址白名单（OpenRouter）'],
+  ['lib/ai/keystore.js', /isEncryptionAvailable/, '密钥保存前检查系统安全存储是否可用'],
+  ['lib/ai/monitor.js', /ai-usage\.json|spreadSpend/, '余额差值推算消耗的实现'],
+  ['renderer/view-ai.js', /估算/, 'AI 页面上标注 token 是估算']
+];
+for (const [rel, re, label] of aiProbe) {
+  const src = readEntry(rel);
+  const ok = !!src && re.test(src);
+  console.log((ok ? 'OK  ' : '✖   ') + '打包后仍具备：' + label);
+  if (!ok) failed++;
+}
+
 fs.closeSync(fd);
-console.log('\n' + (failed ? '校验失败（' + failed + ' 项）' : '打包产物校验通过：页面具备启动能力'));
+console.log('\n' + (failed ? '校验失败（' + failed + ' 项）' : '打包产物校验通过：页面具备启动能力，AI 监测的安全边界完好'));
 process.exit(failed ? 1 : 0);

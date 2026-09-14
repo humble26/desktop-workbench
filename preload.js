@@ -71,6 +71,18 @@ contextBridge.exposeInMainWorld('api', {
   getUsageSummary: (opts) => ipcRenderer.invoke('usage:getSummary', opts),
   clearUsage: () => ipcRenderer.invoke('usage:clear'),
 
+  // AI 平台余额监测
+  // 注意：密钥是「只写」的 —— 渲染层能 setKey / clearKey 并读到掩码，
+  // 但主进程从不把明文密钥回传（见 lib/ai/keystore.js 的说明）。
+  aiList: () => ipcRenderer.invoke('ai:list'),
+  aiRefresh: (ids) => ipcRenderer.invoke('ai:refresh', ids),
+  aiSetKey: (id, key, verify) => ipcRenderer.invoke('ai:setKey', { id, key, verify: verify !== false }),
+  aiClearKey: (id) => ipcRenderer.invoke('ai:clearKey', id),
+  aiHistory: (opts) => ipcRenderer.invoke('ai:history', opts),
+  aiClearHistory: () => ipcRenderer.invoke('ai:clearHistory'),
+  aiClearProvider: (id) => ipcRenderer.invoke('ai:clearProvider', id),
+  onAiUpdated: (cb) => ipcRenderer.on('ai:updated', (_e, d) => cb(d)),
+
   // 截图 OCR 取字
   startScreenshot: () => ipcRenderer.invoke('shot:start'),
   shotReady: () => ipcRenderer.invoke('shot:ready'),

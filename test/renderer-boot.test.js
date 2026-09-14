@@ -56,14 +56,14 @@ test('页面能自行启动：脚本全部加载、boot() 成功、首页与侧�
   }
 });
 
-test('11 个视图逐个渲染都不抛异常', async () => {
+test('12 个视图逐个渲染都不抛异常', async () => {
   const h = createRendererHarness();
   try {
     const r = await h.boot(300);
     assert.strictEqual(r.bootOk, true, '起点：boot() 必须成功');
 
     const views = ['dashboard', 'shortcuts', 'files', 'todos', 'calendar', 'notes',
-      'checkins', 'pomodoro', 'stats', 'usage', 'settings'];
+      'checkins', 'pomodoro', 'stats', 'usage', 'ai', 'settings'];
     const failures = [];
     for (const v of views) {
       try {
@@ -92,6 +92,72 @@ test('11 个视图逐个渲染都不抛异常', async () => {
     assert.ok(empty.indexOf('添加一个想坚持的习惯吧') !== -1,
       '打卡为空时缺少引导文案（空状态分支没渲染）');
     assert.deepStrictEqual(r.errors, [], '渲染层报错：' + JSON.stringify(r.errors));
+  } finally {
+    h.dispose();
+  }
+});
+
+/* AI 余额页的关键不在于「画出来了」，而在于**别把估算说成事实**：
+   平台没有公开用量接口，token 数是由消耗金额换算的估算值，
+   界面上必须同时出现「估算」与「推算」的字样。 */
+test('AI 余额页渲染余额与消耗，且明确标注 token 数是估算', async () => {
+  const h = createRendererHarness();
+  try {
+    const r = await h.boot(300);
+    const html = await r.evalIn(`(async function () {
+      state.view = 'ai'; await render();
+      return String(document.querySelector('#view').innerHTML || '');
+    })()`);
+    assert.ok(html.indexOf('DeepSeek') !== -1, '应显示平台名');
+    assert.ok(html.indexOf('110.25') !== -1, '应显示余额数值');
+    assert.ok(html.indexOf('sk-****abcd') !== -1, '应显示密钥掩码（而不是明文）');
+    assert.ok(html.indexOf('估算') !== -1, '必须标注 token 数是估算');
+    assert.ok(html.indexOf('余额差值推算') !== -1, '必须说明消耗由余额差值推算');
+    assert.ok(html.indexOf('不参与导出') !== -1, '必须说明数据不参与导出 / 备份');
+  } finally {
+    h.dispose();
+  }
+});
+
+test('AI 监测未开启时给出开启引导（而不是空白）', async () => {
+  const h = createRendererHarness({
+    apiOverrides: {
+      aiList: () => Promise.resolve({
+        supported: true, enabled: false, intervalMinutes: 30, lowBalance: 0,
+        keyStorage: '测试替身', keyStorageAvailable: true, providers: []
+      })
+    }
+  });
+  try {
+    const r = await h.boot(300);
+    const html = await r.evalIn(`(async function () {
+      state.view = 'ai'; await render();
+      return String(document.querySelector('#view').innerHTML || '');
+    })()`);
+    assert.ok(html.indexOf('未开启') !== -1, '未开启时应说明原因');
+    assert.ok(html.indexOf('去设置开启') !== -1, '未开启时应给出开启入口');
+  } finally {
+    h.dispose();
+  }
+});
+
+test('系统安全存储不可用时，AI 页必须明说而不能假装正常', async () => {
+  const h = createRendererHarness({
+    apiOverrides: {
+      aiList: () => Promise.resolve({
+        supported: true, enabled: true, intervalMinutes: 30, lowBalance: 0,
+        keyStorage: '不可用', keyStorageAvailable: false, providers: []
+      })
+    }
+  });
+  try {
+    const r = await h.boot(300);
+    const html = await r.evalIn(`(async function () {
+      state.view = 'ai'; await render();
+      return String(document.querySelector('#view').innerHTML || '');
+    })()`);
+    assert.ok(html.indexOf('安全存储不可用') !== -1, 'safeStorage 不可用必须显式提示');
+    assert.ok(html.indexOf('明文') !== -1, '应说明拒绝明文保存密钥');
   } finally {
     h.dispose();
   }

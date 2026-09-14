@@ -281,15 +281,18 @@ test('打包环境（app.asar + 中文路径 + 框架实例不同）下 IPC 必�
   for (const f of ['main.js', 'preload.js', 'package.json']) {
     fs.copyFileSync(path.join(ROOT, f), path.join(asarDir, f));
   }
-  for (const d of ['lib', 'renderer']) {
-    const from = path.join(ROOT, d);
-    const to = path.join(asarDir, d);
+  // 必须**递归**复制：真实的打包白名单是 lib/**/*（package.json build.files），
+  // 只拷一层的话，lib/ai/ 这样的子目录不会进模拟包，
+  // 于是 require('./lib/ai/…') 失败 —— 那是模拟失真，不是应用的问题。
+  function copyTree(from, to) {
     fs.mkdirSync(to, { recursive: true });
     for (const f of fs.readdirSync(from)) {
       const s = path.join(from, f);
-      if (fs.statSync(s).isFile()) fs.copyFileSync(s, path.join(to, f));
+      if (fs.statSync(s).isDirectory()) copyTree(s, path.join(to, f));
+      else fs.copyFileSync(s, path.join(to, f));
     }
   }
+  for (const d of ['lib', 'renderer']) copyTree(path.join(ROOT, d), path.join(asarDir, d));
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-asar-user-'));
   const stub = makeElectronStub(tmpDir);
