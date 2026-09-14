@@ -138,6 +138,13 @@ function makeElectronStub(tmpDir) {
     powerMonitor: { getSystemIdleTime: () => 0, on: () => {} },
     desktopCapturer: { getSources: () => Promise.resolve([]) },
     net: { request: () => ({ on: () => {}, end: () => {}, setHeader: () => {}, setTimeout: () => {} }) },
+    // AI 密钥库依赖 safeStorage。替身要能真的往返，否则「保存密钥」这条路
+    // 在测试里永远走不通，只有真机上才第一次被执行。
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      encryptString: (s) => Buffer.from('WBSTUB:' + Buffer.from(String(s), 'utf8').toString('base64'), 'utf8'),
+      decryptString: (buf) => Buffer.from(String(buf.toString('utf8')).slice(7), 'base64').toString('utf8')
+    },
     __internals: { handlers, sent, registeredShortcuts, windows }
   };
   return electron;
@@ -331,4 +338,163 @@ test('打包环境（app.asar + 中文路径 + 框架实例不同）下 IPC 必�
 test('打包环境：renderer/app.js 必须带启动入口调用', () => {
   const appJs = fs.readFileSync(path.join(ROOT, 'renderer', 'app.js'), 'utf8');
   assert.match(appJs, /^\s*boot\(\);\s*$/m, 'app.js 缺少 boot(); 入口调用，页面将不会启动');
+});
+
+/* ---------------------------------------------------------------------------
+   AI 余额监测：主进程侧的「不发请求」承诺
+   这是文档里写死的一条：功能默认关闭时不产生任何相关网络请求。
+   保存密钥后「顺手验证」看着无害，但它正是最容易把这条承诺悄悄破坏掉的路径，
+   所以必须在这里用真实的 handler + 真实的 net 替身把它钉住。
+   --------------------------------------------------------------------------- */
+/* 让替身 net 真的给出一次响应。
+   只记录调用而不回包的话，lib/ai/http.js 的 Promise 永远不会 settle，
+   调用它的 handler 就会一直挂着 —— 测试表现是「超时」，而不是「失败」，
+   非常难查。这里回一个 401（模拟密钥无效），足够让整条链路走完。 */
+function stubNetWith401(stub, netCalls) {
+  stub.net.request = (opts) => {
+    netCalls.push(opts);
+    const h = {};
+    const resH = {};
+    const req = {
+      on: (ev, cb) => { h[ev] = cb; return req; },
+      setHeader: () => req,
+      setTimeout: () => req,
+      abort: () => {},
+      end: () => {
+        setImmediate(() => {
+          const res = { statusCode: 401, on: (ev, cb) => { resH[ev] = cb; return res; } };
+          if (h.response) h.response(res);
+          if (resH.data) resH.data(Buffer.from(JSON.stringify({ error: { message: 'Authentication Fails' } }), 'utf8'));
+          if (resH.end) resH.end();
+        });
+      }
+    };
+    return req;
+  };
+}
+
+test('AI 监测：功能关闭时保存密钥与手动刷新都不发任何请求', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-main-ai-'));
+  const stub = makeElectronStub(tmpDir);
+  const netCalls = [];
+  stubNetWith401(stub, netCalls);
+  freshMain(stub);
+  await new Promise(r => setTimeout(r, 150));
+
+  const { handlers } = stub.__internals;
+  const ev = {
+    senderFrame: { url: require('node:url').pathToFileURL(path.join(ROOT, 'renderer', 'index.html')).href },
+    sender: {}
+  };
+  ev.sender.mainFrame = ev.senderFrame;
+
+  // 1) 功能默认关闭（默认值就是 enabled:false）
+  const setKey = handlers.get('ai:setKey');
+  assert.ok(setKey, '主进程应注册 ai:setKey');
+  const r1 = setKey(ev, { id: 'deepseek', key: 'sk-test-key-0123456789', verify: true });
+  assert.strictEqual(r1.ok, true, '替身 safeStorage 可用时应能保存密钥：' + JSON.stringify(r1));
+  await new Promise(r => setTimeout(r, 150));
+  assert.strictEqual(netCalls.length, 0, '功能关闭时「保存密钥顺手验证」不该发起请求');
+
+  const refresh = handlers.get('ai:refresh');
+  const r2 = await refresh(ev, null);
+  assert.strictEqual(r2.ok, false);
+  assert.strictEqual(r2.reason, 'disabled', '功能关闭时刷新应被明确拒绝');
+  assert.strictEqual(netCalls.length, 0, '被拒绝时更不该有请求');
+
+  // 2) 打开功能后再刷新 —— 证明这条路不是死的（否则上面的「0 次」毫无意义）
+  const commit = handlers.get('store:commit');
+  const pc = commit(ev, {
+    patch: {
+      settings: {
+        aiMonitor: {
+          enabled: true, intervalMinutes: 30, lowBalance: 0,
+          providers: { deepseek: { enabled: true, price: 4 } }
+        }
+      }
+    }
+  });
+  assert.strictEqual(pc.ok, true, '开关应能通过补丁落盘：' + JSON.stringify(pc));
+
+  const r3 = await refresh(ev, ['deepseek']);
+  assert.strictEqual(r3.ok, true, '功能打开后应接受刷新');
+  assert.strictEqual(r3.refreshed, 1);
+  assert.ok(netCalls.length >= 1, '功能打开后应真的发起请求');
+  assert.match(String(netCalls[0].url), /deepseek/, '请求应发往 DeepSeek 官方地址');
+  assert.strictEqual(netCalls[0].redirect, 'manual', '请求必须设 redirect=manual（防止密钥被带到跳转目标）');
+  assert.ok(/Bearer sk-test-key/.test(String((netCalls[0].headers || {}).Authorization)),
+    '应带上 Authorization 头');
+
+  // 密钥无效时应把原因记下来，而不是静默成功
+  const sum = handlers.get('ai:list')(ev);
+  const ds = sum.providers.find(x => x.id === 'deepseek');
+  assert.strictEqual(ds.ok, false);
+  assert.match(ds.error, /密钥无效/);
+});
+
+test('AI 监测：拉黑开关的平台即使被显式点名也不发请求', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-main-ai2-'));
+  const stub = makeElectronStub(tmpDir);
+  const netCalls = [];
+  stubNetWith401(stub, netCalls);
+  freshMain(stub);
+  await new Promise(r => setTimeout(r, 150));
+  const { handlers } = stub.__internals;
+  const ev = {
+    senderFrame: { url: require('node:url').pathToFileURL(path.join(ROOT, 'renderer', 'index.html')).href },
+    sender: {}
+  };
+  ev.sender.mainFrame = ev.senderFrame;
+
+  handlers.get('store:commit')(ev, {
+    patch: {
+      settings: {
+        aiMonitor: {
+          enabled: true, intervalMinutes: 30, lowBalance: 0,
+          providers: { deepseek: { enabled: false, price: 4 } }
+        }
+      }
+    }
+  });
+  handlers.get('ai:setKey')(ev, { id: 'deepseek', key: 'sk-test-key-0123456789', verify: false });
+
+  const r = await handlers.get('ai:refresh')(ev, ['deepseek']);
+  assert.strictEqual(r.refreshed, 0, '平台开关关着时不该刷新');
+  assert.strictEqual(r.skipped, 1);
+  assert.strictEqual(netCalls.length, 0, '关掉的平台不该被任何路径请求');
+});
+
+test('AI 监测：密钥文件里不得出现明文，且主数据与渲染层都拿不到明文', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-main-aikey-'));
+  const stub = makeElectronStub(tmpDir);
+  const netCalls = [];
+  stubNetWith401(stub, netCalls);
+  freshMain(stub);
+  await new Promise(r => setTimeout(r, 150));
+
+  const ev = {
+    senderFrame: { url: require('node:url').pathToFileURL(path.join(ROOT, 'renderer', 'index.html')).href },
+    sender: {}
+  };
+  ev.sender.mainFrame = ev.senderFrame;
+
+  const secret = 'sk-plaintext-must-not-appear-987654321';
+  const r = stub.__internals.handlers.get('ai:setKey')(ev, { id: 'deepseek', key: secret, verify: false });
+  assert.strictEqual(r.ok, true);
+
+  const keyFile = path.join(tmpDir, 'ai-keys.json');
+  assert.ok(fs.existsSync(keyFile), '应建立 ai-keys.json');
+  const raw = fs.readFileSync(keyFile, 'utf8');
+  assert.ok(raw.indexOf(secret) === -1, '密钥文件里出现了明文！');
+  assert.ok(raw.indexOf('plaintext-must-not-appear') === -1, '密钥文件里出现了明文片段！');
+
+  // 密钥不该出现在主数据文件里（它必须与 workbench-data.json 隔离）
+  const data = fs.readFileSync(path.join(tmpDir, 'workbench-data.json'), 'utf8');
+  assert.ok(data.indexOf(secret) === -1, '主数据文件里出现了明文密钥！');
+  assert.ok(data.indexOf('aiMonitor') !== -1, '主数据里应只保存 aiMonitor 配置（不含密钥）');
+
+  // 渲染层能读到的形状里也不能有明文
+  const summary = stub.__internals.handlers.get('ai:list')(ev);
+  assert.ok(JSON.stringify(summary).indexOf(secret) === -1, 'ai:list 泄露了明文密钥');
+  assert.ok(JSON.stringify(summary).indexOf('****4321') !== -1, 'ai:list 应给出掩码');
 });

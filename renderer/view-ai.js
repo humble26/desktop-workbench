@@ -138,8 +138,14 @@ async function renderAi(v) {
 
 // 单个平台卡片：余额 + 消耗 + 估算 token + 14 天柱状图 + 错误信息
 function aiProviderCard(p, hist) {
-  const statusCls = p.ok ? 'ok' : (p.hasKey ? 'err' : 'idle');
-  const statusText = p.ok ? '正常' : (p.hasKey ? '异常' : '未配置密钥');
+  // 状态必须说准原因：没开开关 vs 没填密钥 vs 请求失败，是三件不同的事
+  const statusCls = !p.enabled ? 'idle' : (p.ok ? 'ok' : (p.hasKey ? 'err' : 'idle'));
+  const statusText = !p.enabled ? '未启用'
+    : (!p.hasKey ? '未配置密钥' : (p.ok ? '正常' : '异常'));
+  // 关掉的平台不提供刷新入口 —— 否则等于绕开开关打了一次平台接口
+  const actions = !p.enabled ? ''
+    : `${p.consoleUrl ? `<button class="btn ghost sm" data-act="ai-open-console" data-id="${esc(p.id)}">${icon('external', 13)} 平台控制台</button>` : ''}
+       <button class="btn ghost sm" data-act="ai-refresh" data-id="${esc(p.id)}">${icon('refresh', 13)} 刷新</button>`;
   const spend = p.spend || {};
   const tokensToday = aiTokens(spend.tokensToday);
   const tokens7 = aiTokens(spend.tokensLast7);
@@ -162,7 +168,8 @@ function aiProviderCard(p, hist) {
   kv.push(['今日消耗', aiMoney(spend.today, p.currency) + (tokensToday ? ' <span class="dim">≈ ' + esc(tokensToday) + ' token</span>' : '')]);
   kv.push(['近 7 天消耗', aiMoney(spend.last7, p.currency) + (tokens7 ? ' <span class="dim">≈ ' + esc(tokens7) + ' token</span>' : '')]);
   kv.push(['日均消耗', spend.avgPerDay > 0 ? aiMoney(spend.avgPerDay, p.currency) + ' <span class="dim">（按 ' + spend.observedDays + ' 天）</span>' : '—']);
-  kv.push(['预计可用', spend.daysLeft !== null ? '约 ' + spend.daysLeft + ' 天' : (spend.avgPerDay > 0 ? '余额不足一天' : '还不够数据')]);
+  // 注意用 Number.isFinite 而不是 !== null：字段缺失时 undefined !== null 会让这里渲染出「约 undefined 天」
+  kv.push(['预计可用', Number.isFinite(spend.daysLeft) ? '约 ' + spend.daysLeft + ' 天' : (spend.avgPerDay > 0 ? '余额不足一天' : '还不够数据')]);
   const kvHtml = kv.map(([k, val]) => `<div class="ai-kv-row"><span class="ai-kv-k">${esc(k)}</span><span class="ai-kv-v">${val}</span></div>`).join('');
 
   return `
@@ -173,8 +180,7 @@ function aiProviderCard(p, hist) {
         <span class="ai-status">${esc(statusText)}</span>
         ${p.at ? `<span class="ai-at">${esc(aiTime(p.at))}</span>` : ''}
         <span class="spacer"></span>
-        ${p.consoleUrl ? `<button class="btn ghost sm" data-act="ai-open-console" data-id="${esc(p.id)}">${icon('external', 13)} 平台控制台</button>` : ''}
-        <button class="btn ghost sm" data-act="ai-refresh" data-id="${esc(p.id)}">${icon('refresh', 13)} 刷新</button>
+        ${actions}
       </div>
       <div class="ai-body">
         <div class="ai-left">
@@ -182,8 +188,9 @@ function aiProviderCard(p, hist) {
           <div class="ai-sub">可用余额${p.currency ? ' · ' + esc(p.currency) : ''}${p.note ? ' · ' + esc(p.note) : ''}</div>
           ${breakdown.length ? `<div class="ai-sub dim">${esc(breakdown.join(' · '))}</div>` : ''}
           ${p.masked ? `<div class="ai-sub dim">密钥 ${esc(p.masked)}</div>` : ''}
+          ${!p.enabled ? '<div class="ai-sub dim">在「设置 · AI 余额监测」里打开这个平台的开关后才会读取</div>' : ''}
           ${p.ok && p.available === false ? '<div class="ai-warn">该平台标记为「余额不足」，调用会被拒绝</div>' : ''}
-          ${!p.ok && p.error ? `<div class="ai-err">${esc(p.error)}</div>` : ''}
+          ${p.enabled && !p.ok && p.error ? `<div class="ai-err">${esc(p.error)}</div>` : ''}
           ${p.ok ? kvHtml : ''}
         </div>
         <div class="ai-right">
@@ -232,7 +239,9 @@ function aiMonitorSettingsGroup() {
         `<div class="opt ${ai.intervalMinutes === v ? 'on' : ''}" data-act="ai-interval" data-value="${v}">${lb}</div>`).join('')}</div>`));
 
     rows.push(row('bell', 'c4', '低余额提醒',
-      '余额低于该值时发一次系统通知（同一天同一平台只提醒一次）；填 0 表示不提醒',
+      '余额低于该值时发一次系统通知（同一天同一平台只提醒一次）；填 0 表示不提醒。'
+      + '注意阈值是<b>各平台按自己币种的数字直接比较</b>的 —— 同时用人民币和美元平台时，'
+      + '请按较小的那个币种来设，或者干脆按「低于这个数字就提醒」理解。',
       ctl(`<input type="number" id="aiLow" min="0" step="1" value="${esc(ai.lowBalance || 0)}" style="width:110px" />`)));
   }
 
@@ -313,6 +322,15 @@ function wireAiSettingsInputs() {
   }
 }
 
+// 现在保存密钥会不会真的触发一次验证？只有总开关与平台开关都开着才会。
+// 主进程侧有同样的判断（两处都拦：这里决定提示语，那里才是真正的防线）。
+function aiWillVerifyNow(providerId) {
+  const d = (state.settings && state.settings.aiMonitor) || {};
+  if (d.enabled !== true) return false;
+  const c = (d.providers || {})[String(providerId).toLowerCase()] || {};
+  return c.enabled === true;
+}
+
 // 统一的设置写入：保证 aiMonitor 结构存在
 function aiMutate(fn) {
   if (!state.settings.aiMonitor || typeof state.settings.aiMonitor !== 'object') {
@@ -321,10 +339,6 @@ function aiMutate(fn) {
   const d = state.settings.aiMonitor;
   if (!d.providers || typeof d.providers !== 'object') d.providers = {};
   fn(d);
-}
-function aiProviderCfg(id) {
-  aiMutate(d => { if (!d.providers[id] || typeof d.providers[id] !== 'object') d.providers[id] = {}; });
-  return state.settings.aiMonitor.providers[id];
 }
 
 /* 重新拉一次整份状态。

@@ -163,6 +163,89 @@ test('系统安全存储不可用时，AI 页必须明说而不能假装正常',
   }
 });
 
+/* AI 卡片的状态文案必须说准原因：没开开关 / 没填密钥 / 请求失败是三件事。
+   同时，关掉的平台不该出现「刷新」按钮 —— 那等于绕开开关打了一次平台接口。 */
+test('AI 卡片区分「未启用 / 未配置密钥 / 异常」，且关掉的平台没有刷新入口', async () => {
+  const mkProvider = (over) => Object.assign({
+    id: 'moonshot', name: 'Moonshot', custom: false, currency: 'CNY', enabled: false,
+    hasKey: false, masked: '', keyReadable: false, keyAt: 0,
+    ok: false, at: 0, balance: null, granted: null, toppedUp: null, limit: null, used: null,
+    available: null, note: '', error: '', price: 12,
+    spend: {
+      today: 0, yesterday: 0, last7: 0, last14: 0, avgPerDay: 0, observedDays: 1,
+      daysLeft: null, tracked: 0, price: 12, tokensToday: null, tokensLast7: null, tokensTracked: null
+    },
+    consoleUrl: 'https://platform.moonshot.cn/console/info', keyUrl: '', keyHint: 'sk-…',
+    priceNote: '', url: '', balancePath: '', grantedPath: '', usedPath: ''
+  }, over || {});
+
+  const h = createRendererHarness({
+    apiOverrides: {
+      aiList: () => Promise.resolve({
+        supported: true, enabled: true, intervalMinutes: 30, lowBalance: 0,
+        keyStorage: '测试替身', keyStorageAvailable: true, refreshing: false, lastRefreshAt: Date.now(),
+        lastRefreshError: null,
+        providers: [
+          mkProvider({ id: 'a-off', name: '关着的平台', enabled: false }),
+          mkProvider({ id: 'b-nokey', name: '开着但没密钥的平台', enabled: true, hasKey: false }),
+          mkProvider({ id: 'c-err', name: '开着但报错的平台', enabled: true, hasKey: true, masked: 'sk-****err', error: '密钥无效或没有权限（HTTP 401）' })
+        ]
+      })
+    }
+  });
+  try {
+    const r = await h.boot(300);
+    const html = await r.evalIn(`(async function () {
+      state.view = 'ai'; await render();
+      return String(document.querySelector('#view').innerHTML || '');
+    })()`);
+    assert.ok(html.indexOf('未启用') !== -1, '关着的平台应显示「未启用」');
+    assert.ok(html.indexOf('未配置密钥') !== -1, '开着但没密钥的平台应显示「未配置密钥」');
+    assert.ok(html.indexOf('密钥无效或没有权限') !== -1, '报错的平台应显示原因');
+    assert.ok(html.indexOf('在「设置 · AI 余额监测」里打开这个平台的开关') !== -1, '关着的平台应给出开启指引');
+    // 关掉的平台不能有刷新按钮，但开着的可以有
+    assert.strictEqual(/data-act="ai-refresh"\s+data-id="a-off"/.test(html), false,
+      '关着的平台不该出现刷新按钮（那会绕开开关发起请求）');
+    assert.strictEqual(/data-act="ai-refresh"\s+data-id="c-err"/.test(html), true,
+      '开着且报错的平台应能手动重试');
+  } finally {
+    h.dispose();
+  }
+});
+
+/* 渲染层对「字段缺失」要稳：曾经写成 `spend.daysLeft !== null`，
+   一旦字段是 undefined 就会渲染出「约 undefined 天」。 */
+test('AI 卡片对缺失字段不渲染 undefined', async () => {
+  const h = createRendererHarness({
+    apiOverrides: {
+      aiList: () => Promise.resolve({
+        supported: true, enabled: true, intervalMinutes: 30, lowBalance: 0,
+        keyStorage: '测试替身', keyStorageAvailable: true, refreshing: false, lastRefreshAt: Date.now(),
+        lastRefreshError: null,
+        providers: [{
+          id: 'sparse', name: '字段不全的平台', custom: false, currency: 'CNY', enabled: true,
+          hasKey: true, masked: 'sk-****arse', keyReadable: true, keyAt: Date.now(),
+          ok: true, at: Date.now(), balance: 5, granted: null, toppedUp: null,
+          limit: null, used: null, available: true, note: '', error: '', price: 0,
+          spend: { today: 0, yesterday: 0, last7: 0, last14: 0, avgPerDay: 0, tracked: 0, price: 0 },
+          consoleUrl: '', keyUrl: '', keyHint: '', priceNote: '', url: '', balancePath: '', grantedPath: '', usedPath: ''
+        }]
+      })
+    }
+  });
+  try {
+    const r = await h.boot(300);
+    const html = await r.evalIn(`(async function () {
+      state.view = 'ai'; await render();
+      return String(document.querySelector('#view').innerHTML || '');
+    })()`);
+    assert.ok(html.indexOf('undefined') === -1, '渲染结果里出现了 undefined：' + html.slice(Math.max(0, html.indexOf('undefined') - 120), html.indexOf('undefined') + 60));
+    assert.ok(html.indexOf('还不够数据') !== -1, '缺少预计天数时应给出可读的占位文案');
+  } finally {
+    h.dispose();
+  }
+});
+
 test('数据读取失败时，界面必须给出可见提示而不是空白（v1.8.2 空白事故的防线）', async () => {
   const h = createRendererHarness({
     apiOverrides: {

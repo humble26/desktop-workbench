@@ -1071,7 +1071,8 @@ function main() {
   //   （见 lib/ai/monitor.js 顶部）。密钥用 safeStorage 加密单独存放，不进主数据。
   // -----------------------------------------------------------
   function aiSettings() {
-    return aiSettingsDomain.normalizeAiSettings(loadStore().settings && loadStore().settings.aiMonitor);
+    const d = loadStore();
+    return aiSettingsDomain.normalizeAiSettings(d && d.settings && d.settings.aiMonitor);
   }
 
   const aiKeyStore = createAiKeyStore({
@@ -1738,6 +1739,12 @@ function main() {
 
   ipcMain.handle('ai:refresh', async (event, ids) => {
     if (!isTrustedSender(event)) return { ok: false, reason: 'forbidden' };
+    // 功能关闭时**一个请求都不发** —— 这是 README/CHANGELOG 明确承诺过的事。
+    // 只在 main 这一层拦：monitor.refresh() 本身是「执行刷新」的语义，
+    // 该不该刷新属于调用方的判断。
+    if (aiSettings().enabled !== true) {
+      return { ok: false, reason: 'disabled', refreshed: 0, summary: aiMonitor.summary() };
+    }
     const list = Array.isArray(ids) ? ids.filter(x => typeof x === 'string').slice(0, 20) : null;
     return aiMonitor.refresh(list);
   });
@@ -1749,8 +1756,10 @@ function main() {
     if (typeof id !== 'string' || typeof key !== 'string') return { ok: false, error: '参数不合法' };
     if (!aiProviders.providerById(id)) return { ok: false, error: '未知平台' };
     const r = aiKeyStore.set(id, key);
-    // 刚填完密钥就顺手验证一次，让「密钥是否可用」当场可见，而不是等到下次轮询
-    if (r.ok && payload && payload.verify === true) {
+    // 刚填完密钥顺手验证一次，让「密钥是否可用」当场可见；
+    // 但功能关闭时**不验证** —— 否则「我只是先存个密钥」也会打一次平台接口，
+    // 与「默认关闭、不发请求」的承诺相矛盾。这种情况界面会提示「开启后会验证」。
+    if (r.ok && payload && payload.verify === true && aiSettings().enabled === true) {
       aiMonitor.refresh([String(id).toLowerCase()]).catch(e => logE('ai.setKey.verify', e));
     }
     return r;

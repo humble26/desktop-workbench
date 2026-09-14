@@ -6,7 +6,9 @@ ocr-data/
 .DS_Store
 
 # 诊断/测试产生的临时文件（不应进入版本库）
-probe-result.json
-probe-api-descriptor.json
-probe-api.html
+# 用通配而不是逐个列名：以前是新加一个探针就得记得回来补一行，
+# 忘了就会把 probe-*.json 提交进仓库、也会被打进源码包
+probe-*.json
+probe-*.html
+probe-*.txt
 smoke-report.txt

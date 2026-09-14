@@ -1,10 +1,10 @@
 # 桌面工作台（desktop-workbench）
 
-一个集成 **待办 / 便签 / 打卡 / 番茄钟 / 剪贴板历史 / 截图 OCR / 时间统计 / 文件自动整理 / 桌面小组件** 的 Windows 桌面效率应用。基于 Electron，界面简约，**数据全部本地存储、不联网**。
+一个集成 **待办 / 便签 / 打卡 / 番茄钟 / 剪贴板历史 / 截图 OCR / 时间统计 / AI 余额监测 / 文件自动整理 / 桌面小组件** 的 Windows 桌面效率应用。基于 Electron，界面简约，**数据全部本地存储**；除你主动开启的「AI 余额监测」与「检查更新」之外，**不产生任何联网请求**。
 
-> 当前版本：**v1.9.0** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
+> 当前版本：**v1.9.1** · [更新日志](CHANGELOG.md) · [下载 Releases](https://github.com/humble26/desktop-workbench/releases)
 
-> ⚠️ **如果你装的是 v1.8.2 / v1.8.3 / v1.8.4 / v1.8.5：请直接改用 v1.8.6。**
+> ⚠️ **如果你装的是 v1.8.2 / v1.8.3 / v1.8.4 / v1.8.5：请直接改用 v1.9.1。**
 > 这些版本启动后界面是空白的（侧栏品牌可见，但导航、首页、窗口按钮全空）。根因是 `renderer/core.js` 顶层的 `const api = window.api;` —— preload 通过 `contextBridge` 暴露的 `window.api` 是**不可配置**属性，脚本顶层的 `const` 与它同名会直接抛 `SyntaxError`，导致整个 `core.js` 及其后所有脚本失效；该问题自 v1.8.2 把 `app.js` 拆成多脚本时引入。详见 [更新日志](CHANGELOG.md)。
 > 用户数据不受影响，覆盖安装即可；**升级前请先在系统托盘右键「退出」旧实例**（关闭窗口只是最小化到托盘）。
 
@@ -99,7 +99,7 @@ desktop-workbench/
 │   ├── dialogs.js search.js diagnostics.js actions.js guide.js
 │   ├── style.css           #   设计令牌 + 深色主题（同一套令牌给两套值）
 │   └── clipboard.* quickadd.* shot.* widget.*   # 四个独立小窗
-├── test/                   # 234 项回归测试（node:test，无需 Electron）
+├── test/                   # 244 项回归测试（node:test，无需 Electron）
 ├── tools/                  # 开发工具：语法检查、诊断、拆分与打包校验
 ├── ocr-data/               # 离线 OCR 语言模型（chi_sim + eng）
 ├── build/                  # 应用图标
@@ -127,7 +127,7 @@ desktop-workbench/
 npm install            # 安装依赖（node_modules 不进入版本库）
 npm start              # 本地运行
 
-npm test               # 234 项回归测试（无需图形环境）
+npm test               # 244 项回归测试（无需图形环境）
 npm run test:smoke     # 渲染层集成冒烟测试（真实 Electron + 真实页面，窗口隐藏，33 项断言）
 npm run check          # 语法检查（遍历所有 JS）
 npm run dist           # 生成 Windows 安装包（产物在 dist\）
@@ -139,7 +139,7 @@ npm run dist           # 生成 Windows 安装包（产物在 dist\）
 - `test/helpers/renderer-harness.js` —— 元素桩只实现渲染层真正用到的 DOM，缺什么就显式报错而不是静默返回 `undefined`；**视图测试必须 `await render()`**，否则异步视图里同步抛出的异常会逃逸成测试结束之后的 `unhandledRejection`（测试全绿、退出码却是 1）
 - `test/main-assembly.test.js` —— 用替身 Electron 加载真实 `main.js`；并在名为 `app.asar` 的目录里以「框架实例不同」的形态调用真实 IPC
 - `test/contract.test.js` / `test/text-integrity.test.js` —— 进程边界契约、**渲染层顶层声明不得与 preload 注入的全局同名**（v1.8.2~v1.8.5 白屏的根因）、文本编码完整性
-- `test/ai-*.test.js` —— AI 余额监测的 83 项：平台响应归一化与地址白名单、密钥**不明文落盘且不回传渲染层**、余额差值推算（充值 / 跨天 / 换币种 / 失败）、`redirect: 'manual'` 与错误信息不含密钥、设置归一化的幂等与未知字段保留
+- `test/ai-*.test.js` —— AI 余额监测的 93 项：平台响应归一化与地址白名单、密钥**不明文落盘且不回传渲染层**、余额差值推算（充值 / 跨天 / 换币种 / 失败）、`redirect: 'manual'` 与错误信息不含密钥、设置归一化的幂等与未知字段保留
 
 > 若你的环境设置了 `ELECTRON_RUN_AS_NODE`（某些自动化/沙箱环境会预设），Electron 会被强制成 Node 模式、
 > 无法创建窗口。跑 `npm run test:smoke` 前先清除它：
@@ -179,7 +179,10 @@ npm audit --registry=https://registry.npmjs.org
 
 ## 🔐 隐私与安全
 
-- 应用**不发起任何业务网络请求**。唯一的联网行为是「检查更新」：只读取你在设置里填写的清单地址并比较版本号，**不会自动下载或安装**。
+- **默认不发起任何业务网络请求**。联网只发生在两处，且都由你显式开启：
+  - **检查更新**：只读取你在设置里填写的清单地址并比较版本号，**不会自动下载或安装**。
+  - **AI 余额监测**（默认关闭）：只向各平台**官方域名**读取余额。请求地址写死在 `lib/ai/providers.js` 里、**不接受设置覆盖**；请求**不跟随跳转**（跟随会把 `Authorization` 头带到别的域名）；API Key 用系统级加密单独保存，只发给对应的那个平台。关闭时**一个请求都不发**，连「保存密钥顺手验证」也会被拦下。
+- **API Key 不在导出 / 备份范围内**：它存在独立的 `ai-keys.json`（`safeStorage` 加密），`workbench-data.json` 里只有平台开关与参考单价。系统安全存储不可用时会**拒绝保存密钥**，而不是退回明文。
 - 剪贴板历史默认开启**敏感内容过滤**（JWT / 私钥 / 口令 / API Key / GitHub / Slack / AWS / Google / Stripe Token 等）。注意这是「降低误存风险」，不是安全边界 —— 剪贴板历史文件是明文存储的。
 - 渲染层开启 `contextIsolation` + `sandbox`，无 `nodeIntegration`；每个页面都有严格 CSP（`default-src 'none'`）；IPC 只接受来自本应用 `renderer` 目录的顶层页面。
 - 自动文件整理会真实移动文件：规则目标必须是绝对路径，导入数据里的相关设置也会校验后才接受。

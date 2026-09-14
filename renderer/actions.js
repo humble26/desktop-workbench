@@ -231,10 +231,12 @@ $('#view').addEventListener('click', async (e) => {
       if (!pid) break;
       if (!val) { toast('请先粘贴 API Key'); break; }
       let r = null;
-      try { r = await api.aiSetKey(pid, val); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+      try { r = await api.aiSetKey(pid, val, aiWillVerifyNow(pid)); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
       if (r && r.ok) {
         if (input) input.value = '';                       // 明文不留在界面上
-        toast('密钥已加密保存，正在验证…');
+        // 只有「总开关 + 该平台开关都开着」时主进程才会顺手验证；
+        // 否则一个请求都不会发（功能默认关闭的承诺），这里要把话说准
+        toast(aiWillVerifyNow(pid) ? '密钥已加密保存，正在验证…' : '密钥已加密保存；开启监测后会自动验证');
         await aiReloadSummary();
       } else {
         toast('保存失败：' + ((r && r.error) || '未知原因'));
@@ -280,7 +282,7 @@ $('#view').addEventListener('click', async (e) => {
       });
       if (keyVal) {
         let kr = null;
-        try { kr = await api.aiSetKey('custom', keyVal); } catch (e) { kr = { ok: false, error: (e && e.message) || String(e) }; }
+        try { kr = await api.aiSetKey('custom', keyVal, aiWillVerifyNow('custom')); } catch (e) { kr = { ok: false, error: (e && e.message) || String(e) }; }
         if (!(kr && kr.ok)) { toast('密钥保存失败：' + ((kr && kr.error) || '未知原因')); break; }
         if (keyInput) keyInput.value = '';
       }

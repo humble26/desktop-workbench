@@ -76,7 +76,7 @@ contextBridge.exposeInMainWorld('api', {
   // 但主进程从不把明文密钥回传（见 lib/ai/keystore.js 的说明）。
   aiList: () => ipcRenderer.invoke('ai:list'),
   aiRefresh: (ids) => ipcRenderer.invoke('ai:refresh', ids),
-  aiSetKey: (id, key, verify) => ipcRenderer.invoke('ai:setKey', { id, key, verify: verify !== false }),
+  aiSetKey: (id, key, verify) => ipcRenderer.invoke('ai:setKey', { id, key, verify: verify === true }),
   aiClearKey: (id) => ipcRenderer.invoke('ai:clearKey', id),
   aiHistory: (opts) => ipcRenderer.invoke('ai:history', opts),
   aiClearHistory: () => ipcRenderer.invoke('ai:clearHistory'),

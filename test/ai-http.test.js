@@ -11,7 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { createHttpGet, redact } = require('../lib/ai/http.js');
+const { createHttpGet, redact, friendlyNetworkError } = require('../lib/ai/http.js');
 
 /** 替身 net：把「请求 → 响应事件」的驱动权交回给测试 */
 function fakeNet() {
@@ -167,6 +167,30 @@ test('网络错误被翻译成人话', async () => {
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /网络错误/);
   assert.match(r.error, /ECONNRESET/);
+});
+
+/* 实测（真实 Electron + httpbin 的跳转地址）：redirect: 'manual' 下 Chromium 会抛
+   「Redirect was cancelled」，走的是 error 分支而不是「收到 3xx 响应」。
+   安全效果一样（请求被中止），但那句英文对使用者毫无帮助 —— 这里钉住翻译结果。 */
+test('被中止的跳转要翻译成能照着做的提示，而不是一句英文', async () => {
+  const r = await run(async (f, http) => {
+    const p = http.getJson('https://x.example.com/a');
+    await Promise.resolve();
+    f.requests[0]._handlers.error(new Error('Redirect was cancelled'));
+    return p;
+  });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /跳转/, '应说明是跳转被中止：' + r.error);
+  assert.match(r.error, /密钥/, '应说明为什么不跟随跳转');
+  assert.match(r.error, /直连地址/, '应给出可操作的下一步');
+  assert.strictEqual(/Redirect was cancelled/.test(r.error), false, '不该把原始英文直接抛给用户');
+});
+
+test('friendlyNetworkError：跳转类错误被翻译，其余原样带出', () => {
+  assert.match(friendlyNetworkError('Redirect was cancelled'), /跳转/);
+  assert.match(friendlyNetworkError('net::ERR_TOO_MANY_REDIRECTS'), /跳转/);
+  assert.match(friendlyNetworkError('ECONNRESET'), /ECONNRESET/);
+  assert.match(friendlyNetworkError(''), /网络错误/);
 });
 
 test('网络模块不可用时立刻失败，而不是挂住', async () => {

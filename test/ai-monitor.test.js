@@ -27,6 +27,17 @@ let clock = { t: CLOCK_START };
 
 function shiftDays(n) { clock.t = CLOCK_START + n * 86400000; }
 
+/* 所有创建过的监测器都登记在这里，由文件末尾的 test.after 统一 dispose。
+   为什么需要：reconcile() 会建一个 30 分钟的 setInterval，而它不会阻止进程退出
+   的前提是测试真的走到了 dispose()。一旦某条断言在 dispose() 之前失败，
+   这个定时器就把 Node 进程一直吊着 —— 表现是**整轮测试超时**，而不是那条断言失败。
+   吃过一次亏：一个明确的失败伪装成了「超时」，极难定位。 */
+const liveMonitors = [];
+test.after(() => {
+  for (const m of liveMonitors) { try { m.dispose(); } catch (e) { /* ignore */ } }
+  liveMonitors.length = 0;
+});
+
 /** 一个可控的测试环境：伪造密钥库、HTTP 与设置 */
 function makeEnv(opts) {
   const o = opts || {};
@@ -86,8 +97,10 @@ function makeEnv(opts) {
     dateKey: dateKeyOf,
     now: () => clock.t,
     logE: () => {},
-    onUpdate: (s) => updates.push(s)
+    onUpdate: (s) => updates.push(s),
+    kickDelayMs: o.kickDelayMs
   });
+  liveMonitors.push(monitor);
 
   return { dir, file, monitor, keys, keyStore, push, calls, settingsObj, updates };
 }
@@ -237,6 +250,20 @@ test('只刷新「已启用且有密钥」的平台', async () => {
   assert.match(e.calls[0].url, /deepseek/);
 });
 
+test('显式点名也要看平台开关：关掉的平台不该被任何路径偷偷请求', async () => {
+  const e = makeEnv({ keys: { deepseek: 'sk-a-1234567890', moonshot: 'sk-b-1234567890' } });
+  e.settingsObj.providers.moonshot.enabled = false;
+  const r = await e.monitor.refresh(['moonshot']);
+  assert.strictEqual(r.refreshed, 0, '关掉的平台不该被刷新');
+  assert.strictEqual(r.skipped, 1, '应如实报告跳过了几个');
+  assert.strictEqual(e.calls.length, 0, '一个请求都不该发出去');
+  // 复现真实入口：保存密钥后主进程会「顺手验证」一次 —— 那条路径同样要拦住
+  const r2 = await e.monitor.refresh(['moonshot', 'deepseek']);
+  assert.strictEqual(r2.refreshed, 1, '只刷新开着的那一个');
+  assert.strictEqual(e.calls.length, 1);
+  assert.match(e.calls[0].url, /deepseek/);
+});
+
 test('刷新进行中再次刷新会被拒绝（避免重复请求与重复记账）', async () => {
   const e = makeEnv();
   let release = null;
@@ -248,6 +275,7 @@ test('刷新进行中再次刷新会被拒绝（避免重复请求与重复记�
     httpGet: slow, keyStore: e.keyStore, storePath: () => e.file, settings: () => e.settingsObj,
     dateKey: dateKeyOf, now: () => clock.t, logE: () => {}, onUpdate: () => {}
   });
+  liveMonitors.push(monitor2);
   const first = monitor2.refresh(['deepseek']);
   const second = await monitor2.refresh(['deepseek']);
   assert.strictEqual(second.ok, false);
@@ -478,4 +506,34 @@ test('dispose 之后不再有新的刷新被触发', async () => {
   // dispose 只负责停机；再次 reconcile 会重新启动（由主进程在退出时不再调用）
   const calls = e.calls.length;
   assert.strictEqual(calls, 0, 'dispose 之前那次「踢一脚」应已被取消，不该发出请求');
+});
+
+/* 打开开关的真实时序：渲染层 save() 提交设置 → 主进程 store:commit 里 reconcile()
+   排一个「1.5 秒后补一次」→ 渲染层紧接着自己又调了 aiRefresh()。
+   如果补一次的动作不在触发时复核新鲜度，就会在 1.5 秒后再打一次平台接口。 */
+test('延迟期间已经手动刷过了，就不再补第二次请求', async () => {
+  const e = makeEnv({ kickDelayMs: 40 });
+  e.settingsObj.enabled = true;
+  const first = e.monitor.reconcile();
+  assert.strictEqual(first.kicked, true, '刚打开时应该排一次补刷');
+
+  // 渲染层紧接着的手动刷新
+  e.push(DS, ds(100));
+  await e.monitor.refresh();
+  const afterManual = e.calls.length;
+  assert.strictEqual(afterManual, 1);
+
+  await new Promise(r => setTimeout(r, 120));   // 等排好的那次「补刷」到点
+  assert.strictEqual(e.calls.length, afterManual, '补刷到点时发现刚刚刷过，就不该再打一次接口');
+  e.monitor.dispose();
+});
+
+test('真的很久没刷过时，补刷仍然会执行（不是被上面那条规则一并废掉）', async () => {
+  const e = makeEnv({ kickDelayMs: 30 });
+  e.settingsObj.enabled = true;
+  e.push(DS, ds(100));
+  e.monitor.reconcile();
+  await new Promise(r => setTimeout(r, 120));
+  assert.strictEqual(e.calls.length, 1, '从未刷过时应完成这一次补刷');
+  e.monitor.dispose();
 });
