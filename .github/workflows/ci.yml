@@ -1,0 +1,23 @@
+# 最小 CI：推送 / PR 时跑全量单测（node --test，244 例）
+# 测试跑在纯 Node 下、不启动 Electron 进程（electron 仅在个别测试中被 mock 拦截）
+# 本地同命令验证：244 例全绿（2026-10-05，node v24.18 / npm 11.16）
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 运行单测
+        run: npm test
