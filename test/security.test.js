@@ -80,9 +80,15 @@ test('detached 不再作为拒绝理由（不可靠的辅助信号，真正的�
   assert.strictEqual(check(e), true, 'detached 不应导致拒绝');
 });
 
-test('大小写不敏感平台：大小写混写仍放行', () => {
-  const upper = createTrustedSenderChecker({ rendererDir: 'C:\\App\\Renderer', caseInsensitive: true });
-  assert.strictEqual(upper(event('file:///c:/app/renderer/index.html')), true);
+test('大小写不敏感开关：开启时大小写混写仍放行（不依赖宿主平台）', () => {
+  // 旧写法写死 'C:\\App\\Renderer' 字面量：反斜杠在 Linux 上不是路径分隔符，
+  // rendererDir 与 URL 解析不一致，在 CI 上必然误报。改用平台原生分隔符构造，
+  // 只让大小写不同 —— 恰好验证 caseInsensitive 开关本身。
+  const dir = path.resolve('case-insensitive', 'App', 'Renderer');
+  const upper = createTrustedSenderChecker({ rendererDir: dir, caseInsensitive: true });
+  const mixed = pathToFileURL(path.join(dir, 'index.html')).href
+    .replace('/App/Renderer/', '/app/renderer/');
+  assert.strictEqual(upper(event(mixed)), true);
 });
 
 test('回归：senderFrame 与 sender.mainFrame 不是同一对象时也必须放行', () => {
